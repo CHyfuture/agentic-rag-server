@@ -1,0 +1,246 @@
+"""检索服务，封装 BaseVector-Core RetrieverService。"""
+
+import os
+from typing import Any
+
+from milvus_service import (
+    RetrieverService,
+    SemanticSearchRequest,
+    KeywordSearchRequest,
+    HybridSearchRequest,
+    FulltextSearchRequest,
+    TextMatchSearchRequest,
+    PhraseMatchSearchRequest,
+)
+
+
+def _get_embedding_model():
+    """懒加载 embedding 模型。"""
+    from sentence_transformers import SentenceTransformer
+
+    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5")
+    return SentenceTransformer(model_name)
+
+
+def _encode_query(query: str) -> list[float]:
+    """将查询文本编码为向量。"""
+    model = _get_embedding_model()
+    return model.encode([query])[0].tolist()
+
+
+def _get_collection_name() -> str:
+    """从 .env 获取检索集合名称。"""
+    return os.getenv("COLLECTION_NAME", "default")
+
+
+def _build_extra_params(**params: Any) -> dict[str, Any]:
+    """组装 extra_params，过滤 None 值。"""
+    return {k: v for k, v in params.items() if v is not None}
+
+
+def _escape_like_value(v: str) -> str:
+    """转义 LIKE 值中的单引号，防止注入。"""
+    return str(v).replace("'", "''")
+
+
+def _build_metadata_filter(
+    keyword_text: str | None = None,
+    author: str | None = None,
+    paper_title: str | None = None,
+) -> str:
+    """将 keyword_text、author、paper_title 组装为 Milvus 过滤表达式。"""
+    conditions: list[str] = []
+    if keyword_text and str(keyword_text).strip():
+        v = _escape_like_value(keyword_text.strip())
+        conditions.append(f'keywords_text like "%{v}%"')
+    if author and str(author).strip():
+        v = _escape_like_value(author.strip())
+        conditions.append(f'authors like "%{v}%"')
+    if paper_title and str(paper_title).strip():
+        v = _escape_like_value(paper_title.strip())
+        conditions.append(f'title like "%{v}%"')
+    return " and ".join(conditions) if conditions else None
+
+
+def semantic_search(
+    query: str,
+    top_k: int | None = None,
+    rerank_enabled: bool | None = None,
+    similarity_threshold: float | None = None,
+    keyword_text: str | None = None,
+    author: str | None = None,
+    paper_title: str | None = None,
+    **kwargs: Any,
+):
+    """语义检索，Query 由本地嵌入模型自动转为向量，集合名称从 .env 获取。"""
+    query_vector = _encode_query(query)
+    req_kwargs: dict[str, Any] = {
+        "query": query,
+        "query_vector": query_vector,
+        "collection_name": _get_collection_name(),
+        **kwargs,
+    }
+    if top_k is not None:
+        req_kwargs["top_k"] = top_k
+    if rerank_enabled is not None:
+        req_kwargs["rerank_enabled"] = rerank_enabled
+    if similarity_threshold is not None:
+        req_kwargs["similarity_threshold"] = similarity_threshold
+    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    if metadata_filter is not None:
+        req_kwargs["milvus_expr"] = metadata_filter
+
+    req = SemanticSearchRequest(**req_kwargs)
+    return RetrieverService.semantic_search(req)
+
+
+def keyword_search(
+    query: str,
+    top_k: int | None = None,
+    min_match_count: int | None = None,
+    keyword_text: str | None = None,
+    author: str | None = None,
+    paper_title: str | None = None,
+    **kwargs: Any,
+):
+    """关键词检索，集合名称从 .env 获取。"""
+    req_kwargs: dict[str, Any] = {
+        "query": query,
+        "collection_name": _get_collection_name(),
+        **kwargs,
+    }
+    if top_k is not None:
+        req_kwargs["top_k"] = top_k
+    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    if metadata_filter is not None:
+        req_kwargs["milvus_expr"] = metadata_filter
+    extra = _build_extra_params(min_match_count=min_match_count)
+    if extra:
+        req_kwargs["extra_params"] = extra
+
+    req = KeywordSearchRequest(**req_kwargs)
+    return RetrieverService.keyword_search(req)
+
+
+def hybrid_search(
+    query: str,
+    top_k: int | None = None,
+    rerank_enabled: bool | None = None,
+    similarity_threshold: float | None = None,
+    semantic_weight: float | None = None,
+    keyword_weight: float | None = None,
+    keyword_text: str | None = None,
+    author: str | None = None,
+    paper_title: str | None = None,
+    **kwargs: Any,
+):
+    """混合检索（语义 + 关键词），Query 由本地嵌入模型自动转为向量，集合名称从 .env 获取，支持重排和阈值过滤。"""
+    query_vector = _encode_query(query)
+    req_kwargs: dict[str, Any] = {
+        "query": query,
+        "query_vector": query_vector,
+        "collection_name": _get_collection_name(),
+        **kwargs,
+    }
+    if top_k is not None:
+        req_kwargs["top_k"] = top_k
+    if rerank_enabled is not None:
+        req_kwargs["rerank_enabled"] = rerank_enabled
+    if similarity_threshold is not None:
+        req_kwargs["similarity_threshold"] = similarity_threshold
+    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    if metadata_filter is not None:
+        req_kwargs["milvus_expr"] = metadata_filter
+    extra = _build_extra_params(semantic_weight=semantic_weight, keyword_weight=keyword_weight)
+    if extra:
+        req_kwargs["extra_params"] = extra
+
+    req = HybridSearchRequest(**req_kwargs)
+    return RetrieverService.hybrid_search(req)
+
+
+def fulltext_search(
+    query: str,
+    top_k: int | None = None,
+    min_match_count: int | None = None,
+    match_mode: str | None = None,
+    keyword_text: str | None = None,
+    author: str | None = None,
+    paper_title: str | None = None,
+    **kwargs: Any,
+):
+    """全文检索，集合名称从 .env 获取。"""
+    req_kwargs: dict[str, Any] = {
+        "query": query,
+        "collection_name": _get_collection_name(),
+        **kwargs,
+    }
+    if top_k is not None:
+        req_kwargs["top_k"] = top_k
+    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    if metadata_filter is not None:
+        req_kwargs["milvus_expr"] = metadata_filter
+    extra = _build_extra_params(min_match_count=min_match_count, match_mode=match_mode)
+    if extra:
+        req_kwargs["extra_params"] = extra
+
+    req = FulltextSearchRequest(**req_kwargs)
+    return RetrieverService.fulltext_search(req)
+
+
+def text_match_search(
+    query: str,
+    top_k: int | None = None,
+    keyword_text: str | None = None,
+    author: str | None = None,
+    paper_title: str | None = None,
+    match_type: str | None = None,
+    case_sensitive: bool | None = None,
+    **kwargs: Any,
+):
+    """文本匹配检索，集合名称从 .env 获取。"""
+    req_kwargs: dict[str, Any] = {
+        "query": query,
+        "collection_name": _get_collection_name(),
+        **kwargs,
+    }
+    if top_k is not None:
+        req_kwargs["top_k"] = top_k
+    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    if metadata_filter is not None:
+        req_kwargs["milvus_expr"] = metadata_filter
+    extra = _build_extra_params(match_type=match_type, case_sensitive=case_sensitive)
+    if extra:
+        req_kwargs["extra_params"] = extra
+
+    req = TextMatchSearchRequest(**req_kwargs)
+    return RetrieverService.text_match_search(req)
+
+
+def phrase_match_search(
+    query: str,
+    top_k: int | None = None,
+    keyword_text: str | None = None,
+    author: str | None = None,
+    paper_title: str | None = None,
+    case_sensitive: bool | None = None,
+    allow_partial: bool | None = None,
+    **kwargs: Any,
+):
+    """短语匹配检索，集合名称从 .env 获取。"""
+    req_kwargs: dict[str, Any] = {
+        "query": query,
+        "collection_name": _get_collection_name(),
+        **kwargs,
+    }
+    if top_k is not None:
+        req_kwargs["top_k"] = top_k
+    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    if metadata_filter is not None:
+        req_kwargs["milvus_expr"] = metadata_filter
+    extra = _build_extra_params(case_sensitive=case_sensitive, allow_partial=allow_partial)
+    if extra:
+        req_kwargs["extra_params"] = extra
+
+    req = PhraseMatchSearchRequest(**req_kwargs)
+    return RetrieverService.phrase_match_search(req)

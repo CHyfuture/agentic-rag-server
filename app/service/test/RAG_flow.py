@@ -294,9 +294,7 @@ class RAGFlow:
                 "content": f"用户查询: {query}\n\n以下是检索到的相关内容，请进行整合：\n{retrieval_context}\n\n请输出整合后的信息："
             }
         ]
-
         fused_info = self.deepseek.chat_completion(messages)
-
         if fused_info and fused_info.strip() and fused_info.strip() != "未找到相关信息":
             logger.info(f"信息融合成功，融合后信息长度: {len(fused_info)} 字符")
             print("信息融合成功:")

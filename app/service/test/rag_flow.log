@@ -1,0 +1,60 @@
+2026-02-05 17:22:20,299 - RAGFlow - INFO - RAG流程启动，原始查询: 磁共振成像是什么
+2026-02-05 17:22:20,300 - RAGFlow - INFO - 开始第 1 轮迭代
+2026-02-05 17:22:20,300 - RAGFlow - INFO - 开始理解并改写查询，原始查询: 磁共振成像是什么
+2026-02-05 17:22:20,300 - RAGFlow - INFO - 调用DeepSeek API进行对话完成
+2026-02-05 17:22:21,990 - RAGFlow - INFO - 查询改写成功，改写后的查询: 磁共振成像（MRI）的工作原理和应用领域是什么？
+2026-02-05 17:22:21,990 - RAGFlow - INFO - 开始执行多路召回检索，查询: 磁共振成像（MRI）的工作原理和应用领域是什么？
+2026-02-05 17:22:21,990 - RAGFlow - INFO - 使用集合: papers_chunks_collection
+2026-02-05 17:22:21,990 - RAGFlow - INFO - 尝试混合检索...
+2026-02-05 17:22:29,009 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:29,014 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-02-05 17:22:29,204 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/modules.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:29,468 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:29,693 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:30,046 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:30,351 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:30,616 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:30,844 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/README.md "HTTP/1.1 200 OK"
+2026-02-05 17:22:31,110 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:31,302 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/modules.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:31,611 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:31,847 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/sentence_bert_config.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:32,201 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+2026-02-05 17:22:32,497 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:32,720 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/config.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:33,103 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/model.safetensors "HTTP/1.1 404 Not Found"
+2026-02-05 17:22:33,397 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-base-zh-v1.5 "HTTP/1.1 200 OK"
+2026-02-05 17:22:33,694 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-base-zh-v1.5/commits/main "HTTP/1.1 200 OK"
+2026-02-05 17:22:33,986 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-base-zh-v1.5/discussions?p=0 "HTTP/1.1 200 OK"
+2026-02-05 17:22:34,281 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-base-zh-v1.5/commits/refs%2Fpr%2F1 "HTTP/1.1 200 OK"
+2026-02-05 17:22:34,579 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/refs%2Fpr%2F1/model.safetensors.index.json "HTTP/1.1 404 Not Found"
+2026-02-05 17:22:34,855 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/refs%2Fpr%2F1/model.safetensors "HTTP/1.1 302 Found"
+2026-02-05 17:22:39,494 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:39,707 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/config.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:40,008 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:40,199 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:40,477 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-base-zh-v1.5/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+2026-02-05 17:22:40,749 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-base-zh-v1.5/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-02-05 17:22:41,055 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/BAAI/bge-base-zh-v1.5/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-02-05 17:22:41,308 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-base-zh-v1.5/f03589ceff5aac7111bd60cfc7d497ca17ecac65/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+2026-02-05 17:22:41,638 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-base-zh-v1.5 "HTTP/1.1 200 OK"
+2026-02-05 17:22:41,872 - RAGFlow - INFO - 混合检索结果数: 20
+2026-02-05 17:22:41,872 - RAGFlow - INFO - 合并后去重结果数: 20
+2026-02-05 17:22:41,873 - RAGFlow - INFO - 检索到结果，显示前3个结果预览
+2026-02-05 17:22:41,873 - RAGFlow - INFO - 开始对检索结果进行summary/排序/过滤/聚合，查询: 磁共振成像（MRI）的工作原理和应用领域是什么？
+2026-02-05 17:22:41,873 - RAGFlow - INFO - 排序后结果数: 20
+2026-02-05 17:22:41,873 - RAGFlow - INFO - 过滤后结果数: 20
+2026-02-05 17:22:41,873 - RAGFlow - INFO - 准备的检索上下文长度: 9679 字符
+2026-02-05 17:22:41,873 - RAGFlow - INFO - 使用DeepSeek API进行信息融合...
+2026-02-05 17:22:41,873 - RAGFlow - WARNING - 检索上下文过长 (9679 字符)，进行截断
+2026-02-05 17:22:41,873 - RAGFlow - INFO - 调用DeepSeek API进行对话完成
+2026-02-05 17:22:48,800 - RAGFlow - INFO - 信息融合成功，融合后信息长度: 313 字符
+2026-02-05 17:22:48,800 - RAGFlow - INFO - 开始Judge环节
+2026-02-05 17:22:48,800 - RAGFlow - INFO - 开始判断信息是否足够回答查询，查询: 磁共振成像（MRI）的工作原理和应用领域是什么？
+2026-02-05 17:22:48,800 - RAGFlow - INFO - 调用DeepSeek API进行对话完成
+2026-02-05 17:22:50,027 - RAGFlow - INFO - 判断结果: 足够
+2026-02-05 17:22:50,027 - RAGFlow - INFO - 信息足够，生成最终响应
+2026-02-05 17:22:50,027 - RAGFlow - INFO - 开始生成最终响应，查询: 磁共振成像（MRI）的工作原理和应用领域是什么？
+2026-02-05 17:22:50,027 - RAGFlow - INFO - 调用DeepSeek API进行对话完成
+2026-02-05 17:22:56,161 - RAGFlow - INFO - 最终响应生成成功，响应长度: 258 字符
+2026-02-05 17:22:56,161 - RAGFlow - INFO - RAG流程结束，最终响应: 磁共振成像（MRI）的工作原理涉及从k空间（频率空间）的测量值重建患者的解剖图像。在并行成像中，多个接收线圈同步采集数据，每个线圈具有不同的空间灵敏度分布，这有助于加速采集并提升图像质量。为应对数据采...

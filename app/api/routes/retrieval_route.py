@@ -73,7 +73,6 @@ async def semantic_search(req: SemanticSearchRequest):
             top_k=req.top_k,
             rerank_enabled=req.rerank_enabled,
             similarity_threshold=req.similarity_threshold,
-            milvus_expr=req.milvus_expr,
             keyword_text=req.keyword_text,
             author=req.author,
             paper_title=req.paper_title,

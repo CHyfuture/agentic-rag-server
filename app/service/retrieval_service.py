@@ -1,6 +1,8 @@
 """检索服务，封装 BaseVector-Core RetrieverService。"""
 
 import os
+import logging
+from functools import lru_cache
 from typing import Any
 
 from milvus_service import (
@@ -14,8 +16,32 @@ from milvus_service import (
 )
 
 
+def _configure_embedding_logging() -> None:
+    """降低 embedding/transformers 加载噪音，避免每次请求刷屏。"""
+    # 避免 tokenizers 并行导致的告警噪音
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+    # transformers 的日志与进度条
+    try:
+        from transformers.utils import logging as hf_logging
+
+        hf_logging.set_verbosity_error()
+        # 某些版本提供进度条开关
+        if hasattr(hf_logging, "disable_progress_bar"):
+            hf_logging.disable_progress_bar()
+    except Exception:
+        # 不强依赖 transformers 的具体版本
+        pass
+
+    # sentence-transformers / transformers 的 python logger
+    logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+
+
+@lru_cache(maxsize=1)
 def _get_embedding_model():
     """懒加载 embedding 模型。"""
+    _configure_embedding_logging()
     from sentence_transformers import SentenceTransformer
 
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5")
@@ -25,7 +51,7 @@ def _get_embedding_model():
 def _encode_query(query: str) -> list[float]:
     """将查询文本编码为向量。"""
     model = _get_embedding_model()
-    return model.encode([query])[0].tolist()
+    return model.encode([query], show_progress_bar=False)[0].tolist()
 
 
 def _get_collection_name() -> str:

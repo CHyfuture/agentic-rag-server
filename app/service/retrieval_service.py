@@ -56,7 +56,7 @@ def _encode_query(query: str) -> list[float]:
 
 def _get_collection_name() -> str:
     """从 .env 获取检索集合名称。"""
-    return os.getenv("COLLECTION_NAME", "default")
+    return os.getenv("COLLECTION_NAME", "papers_chunks_collection")
 
 
 def _build_extra_params(**params: Any) -> dict[str, Any]:

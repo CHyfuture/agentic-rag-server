@@ -226,15 +226,24 @@ class RAGFlow:
 
         if not results:
             logger.warning("未检索到相关信息")
+            print("警告: 未检索到相关信息")
             return "未检索到相关信息"
 
         # 1. 排序（按分数降序）
         try:
-            sorted_results = sorted(results, key=lambda x: x.score if hasattr(x, 'score') else 0.0, reverse=True)
+            # 更安全的排序逻辑
+            def get_score(result):
+                try:
+                    return getattr(result, 'score', 0.0)
+                except:
+                    return 0.0
+            
+            sorted_results = sorted(results, key=get_score, reverse=True)
             logger.info(f"排序后结果数: {len(sorted_results)}")
             print(f"排序后结果数: {len(sorted_results)}")
         except Exception as e:
             logger.error(f"排序失败: {str(e)}")
+            print(f"排序失败: {str(e)}")
             sorted_results = results
 
         # 2. 过滤（取前20个结果，增加容错性）
@@ -243,11 +252,24 @@ class RAGFlow:
         print(f"过滤后结果数: {len(filtered_results)}")
 
         # 3. 准备用于信息融合的内容
-        # 只包含内容，避免访问不存在的元数据字段
-        retrieval_context = "\n".join([
-            f"[相关性分数: {result.score:.3f}]\n{result.content}\n" if hasattr(result, 'score') and hasattr(result, 'content') else f"{result.content}\n" if hasattr(result, 'content') else ""
-            for result in filtered_results
-        ])
+        # 更安全的内容提取
+        retrieval_context_parts = []
+        for i, result in enumerate(filtered_results):
+            try:
+                score = getattr(result, 'score', 0.0)
+                content = getattr(result, 'content', '')
+                if content:
+                    retrieval_context_parts.append(f"[结果{i+1} 相关性分数: {score:.3f}]\n{content}\n")
+            except Exception as e:
+                logger.warning(f"处理结果{i+1}时出错: {str(e)}")
+                continue
+
+        retrieval_context = "\n".join(retrieval_context_parts)
+
+        if not retrieval_context.strip():
+            logger.warning("所有检索结果内容为空")
+            print("警告: 所有检索结果内容为空")
+            return "检索结果内容为空"
 
         logger.info(f"准备的检索上下文长度: {len(retrieval_context)} 字符")
         print(f"\n准备的检索上下文长度: {len(retrieval_context)} 字符")
@@ -255,6 +277,13 @@ class RAGFlow:
         # 4. 使用DeepSeek进行信息融合
         logger.info("使用DeepSeek API进行信息融合...")
         print("\n使用DeepSeek API进行信息融合...")
+        
+        # 如果上下文太长，进行截断
+        if len(retrieval_context) > 8000:
+            logger.warning(f"检索上下文过长 ({len(retrieval_context)} 字符)，进行截断")
+            retrieval_context = retrieval_context[:8000] + "...\n[内容已截断]"
+            print(f"警告: 检索上下文过长，已截断至8000字符")
+
         messages = [
             {
                 "role": "system",
@@ -277,12 +306,22 @@ class RAGFlow:
         else:
             logger.warning("信息融合失败，使用备用方案")
             print("信息融合失败，使用备用方案")
-            # 备用方案1：直接拼接前5个结果
-            backup_info = "\n".join([f"{i+1}. {result.content}" for i, result in enumerate(filtered_results[:5]) if hasattr(result, 'content')])
+            
+            # 改进的备用方案
+            backup_parts = []
+            for i, result in enumerate(filtered_results[:5]):
+                try:
+                    content = getattr(result, 'content', '')
+                    if content:
+                        backup_parts.append(f"{i+1}. {content}")
+                except:
+                    continue
+            
+            backup_info = "\n".join(backup_parts)
 
-            # 备用方案2：如果拼接结果仍然不足，返回单个最相关的结果
-            if len(backup_info) < 100 and filtered_results:
-                backup_info = filtered_results[0].content if hasattr(filtered_results[0], 'content') else ""
+            # 如果备用方案仍然为空，提供更明确的错误信息
+            if not backup_info.strip():
+                backup_info = "检索结果内容为空，可能原因：集合为空、数据格式不匹配、检索服务配置问题"
 
             logger.info(f"备用方案信息长度: {len(backup_info)} 字符")
             print(f"备用方案信息长度: {len(backup_info)} 字符")

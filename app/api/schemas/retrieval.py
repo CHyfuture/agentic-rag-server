@@ -90,3 +90,7 @@ class PhraseMatchSearchRequest(BaseModel):
     return_parent_chunk: bool | None = Field(None, description="是否返回父 chunk")
 
 
+class QaRequest(BaseModel):
+    """知识问答。"""
+    query: str = Field(..., description="查询文本")
+    rag_type: int = Field(..., description="RAG实现方式，1旧版本，2新版本")

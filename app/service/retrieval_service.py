@@ -3,6 +3,7 @@
 import os
 import logging
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from milvus_service import (
@@ -38,14 +39,45 @@ def _configure_embedding_logging() -> None:
     logging.getLogger("transformers").setLevel(logging.ERROR)
 
 
+def _resolve_embedding_model_path() -> tuple[str, bool]:
+    """
+    解析 EMBEDDING_MODEL：若为本地路径则转为绝对路径并返回 (path, local_only=True)。
+    返回 (model_path_or_id, use_local_files_only)。
+    """
+    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5").strip()
+    if not model_name:
+        model_name = "BAAI/bge-base-zh-v1.5"
+
+    # 视为本地路径：workspace/...、./、/、或包含 \（Windows）
+    is_local_like = (
+        model_name.startswith("workspace/")
+        or model_name.startswith("workspace\\")
+        or model_name.startswith("./")
+        or model_name.startswith(".\\")
+        or os.path.isabs(model_name)
+        or (len(model_name) >= 2 and model_name[1] == ":")
+        or "\\" in model_name
+    )
+    if is_local_like:
+        if model_name.startswith("workspace/") or model_name.startswith("workspace\\"):
+            # 相对项目根目录的 workspace/xxx
+            root = Path(__file__).resolve().parents[2]
+            path = (root / model_name.replace("\\", "/")).resolve()
+        else:
+            path = Path(model_name).resolve()
+        # 统一按本地模型加载，避免把 workspace/xxx 当成 HuggingFace org/repo 请求网络
+        return (str(path), True)
+    return model_name, False
+
+
 @lru_cache(maxsize=1)
 def _get_embedding_model():
-    """懒加载 embedding 模型。"""
+    """懒加载 embedding 模型，优先使用本地路径且不请求 Hugging Face。"""
     _configure_embedding_logging()
     from sentence_transformers import SentenceTransformer
 
-    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5")
-    return SentenceTransformer(model_name)
+    model_path_or_id, local_only = _resolve_embedding_model_path()
+    return SentenceTransformer(model_path_or_id, local_files_only=local_only)
 
 
 def _encode_query(query: str) -> list[float]:

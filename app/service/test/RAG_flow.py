@@ -268,7 +268,7 @@ class RAGFlow:
             print(f"排序失败: {str(e)}")
             sorted_results = results
 
-        # 2. 过滤（限制处理的chunk数量以提高性能，取前10个最相关的）
+        # 2. 过滤（限制处理的chunk数量以提高性能，取前10个最相关的chunk）
         filtered_results = sorted_results[:10]  # 减少处理的数量，提高性能
         logger.info(f"过滤后结果数: {len(filtered_results)}")
         print(f"过滤后结果数: {len(filtered_results)}")

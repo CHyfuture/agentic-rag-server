@@ -6,23 +6,19 @@ RAG流程实现
 根据提供的流程图，实现完整的检索增强生成流程
 """
 
-import os
-import sys
-import json
 import logging
 from typing import List, Dict, Any, Optional
 import requests
+# 导入项目的retrieval_service模块
+from app.service import retrieval_service
 
-# 设置日志 - 结构化、单一文件、只记录重点内容
+# 设置日志
 logging.basicConfig(
     filename='rag_flow.log',
     level=logging.INFO,
     format='%(asctime)s - RAGFlow - %(message)s'
 )
 logger = logging.getLogger('RAGFlow')
-
-# 导入项目的retrieval_service模块
-from app.service import retrieval_service
 
 # DeepSeek API配置
 API_KEY = "sk-9e728482e15f4cecba9ead88ff7e9cc8"
@@ -93,11 +89,11 @@ class RAGFlow:
         messages = [
             {
                 "role": "system",
-                "content": "你是一个专业的查询理解和改写助手。请分析用户的查询意图，将其改写成更适合检索的形式。如果有上下文，请结合上下文理解用户的真实需求。改写后的查询应该保留原始意图，但更加明确和具体。"
+                "content": "你是一个专业的学术查询理解和改写助手，专注于提高学术论文检索的效果。请严格遵循以下要求：\n1. 分析用户的学术查询意图，识别核心概念和关键术语\n2. 如果有上下文，结合上下文理解用户的真实研究需求\n3. 将查询改写成更适合学术论文检索的形式，使用精确的学术术语\n4. 改写后的查询必须保留原始意图，同时更加明确、具体、全面\n5. 仅输出改写后的查询文本，不要添加任何其他说明或解释\n6. 保持查询简洁，避免冗余信息"
             },
             {
                 "role": "user",
-                "content": f"原始查询: {original_query}{f'\n上下文: {context}' if context else ''}\n请输出改写后的查询："
+                "content": f"原始查询: {original_query}{f'\n上下文: {context}' if context else ''}\n\n改写后的查询:"
             }
         ]
 
@@ -223,11 +219,11 @@ class RAGFlow:
             messages = [
                 {
                     "role": "system",
-                    "content": "你是一个专业的信息总结助手。请阅读以下内容，提取关键信息并进行简洁总结，保留核心内容，不添加额外信息。"
+                    "content": "你是一个专业的学术内容总结助手。请严格遵循以下要求：\n1. 阅读以下学术论文片段，提取核心信息和关键论点\n2. 总结必须准确、简洁，保留所有重要的学术观点和事实\n3. 不添加任何原文中没有的信息或个人解读\n4. 使用清晰的语言结构，突出重点内容\n5. 保持总结长度适中，避免过于冗长或过于简略\n6. 如果内容是论文摘要，保留其主要结构和核心结论"
                 },
                 {
                     "role": "user",
-                    "content": f"请总结以下内容：\n{chunk_content}\n\n总结："
+                    "content": f"请总结以下学术内容：\n{chunk_content}\n\n总结："
                 }
             ]
             summary = self.deepseek.chat_completion(messages)
@@ -311,11 +307,11 @@ class RAGFlow:
         messages = [
             {
                 "role": "system",
-                "content": "你是一个专业的信息分析助手。请仔细阅读用户的查询和提供的各段summary，然后：\n1. 提取所有与查询直接相关的关键信息\n2. 忽略不相关的内容\n3. 将相关信息整合成一段连贯的文本\n4. 不要添加任何检索结果中没有的信息\n5. 如果没有相关信息，直接返回'未找到相关信息'"
+                "content": "你是一个专业的学术信息整合助手。请严格遵循以下要求：\n1. 仔细阅读用户的学术查询和提供的各段论文摘要\n2. 提取所有与查询直接相关的关键学术信息\n3. 忽略与查询无关的内容\n4. 将相关信息整合成一段连贯、逻辑清晰的文本\n5. 保持信息的准确性，不要添加任何检索结果中没有的内容\n6. 如果有多个相关观点，按重要性排序\n7. 如果没有相关信息，直接返回'未找到相关信息'\n8. 确保回答专业、准确，适合学术研究场景"
             },
             {
                 "role": "user",
-                "content": f"用户查询: {query}\n\n以下是各段内容的summary，请进行整合：\n{combined_summaries}\n\n请输出整合后的信息："
+                "content": f"学术查询: {query}\n\n以下是各段论文内容的摘要，请基于这些信息整合出完整回答：\n{combined_summaries}\n\n整合后的回答："
             }
         ]
         fused_info = self.deepseek.chat_completion(messages)

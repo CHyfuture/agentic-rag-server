@@ -13,11 +13,11 @@ import logging
 from typing import List, Dict, Any, Optional
 import requests
 
-# 设置日志
+# 设置日志 - 结构化、单一文件、只记录重点内容
 logging.basicConfig(
     filename='rag_flow.log',
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - RAGFlow - %(message)s'
 )
 logger = logging.getLogger('RAGFlow')
 
@@ -132,13 +132,13 @@ class RAGFlow:
             logger.info(f"使用集合: {collection_name}")
             print(f"使用集合: {collection_name}")
 
-            # 1. 个人认为应该优先尝试混合检索（推荐方式）
+            # 1. 优先尝试混合检索（推荐方式）
             logger.info("尝试混合检索...")
             print("\n1. 尝试混合检索...")
             try:
                 hybrid_results = retrieval_service.hybrid_search(
                     query=query,
-                    top_k=20
+                    top_k=15  # 减少返回结果数量，提高性能
                 )
                 logger.info(f"混合检索结果数: {len(hybrid_results)}")
                 print(f"混合检索结果数: {len(hybrid_results)}")
@@ -158,7 +158,7 @@ class RAGFlow:
                 try:
                     semantic_results = retrieval_service.semantic_search(
                         query=query,
-                        top_k=15
+                        top_k=12  # 减少返回结果数量，提高性能
                     )
                     logger.info(f"语义检索结果数: {len(semantic_results)}")
                     print(f"语义检索结果数: {len(semantic_results)}")
@@ -178,7 +178,7 @@ class RAGFlow:
                 try:
                     keyword_results = retrieval_service.keyword_search(
                         query=query,
-                        top_k=15
+                        top_k=12  # 减少返回结果数量，提高性能
                     )
                     logger.info(f"关键词检索结果数: {len(keyword_results)}")
                     print(f"关键词检索结果数: {len(keyword_results)}")
@@ -208,9 +208,35 @@ class RAGFlow:
         except Exception as e:
             logger.error(f"检索失败: {str(e)}")
             print(f"检索失败: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            # 移除详细的错误堆栈，减少日志噪音
             return []
+
+    def summarize_single_chunk(self, chunk_content: str) -> str:
+        """
+        对单个chunk进行summary
+        Args:
+            chunk_content: chunk内容
+        Returns:
+            summary后的内容
+        """
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": "你是一个专业的信息总结助手。请阅读以下内容，提取关键信息并进行简洁总结，保留核心内容，不添加额外信息。"
+                },
+                {
+                    "role": "user",
+                    "content": f"请总结以下内容：\n{chunk_content}\n\n总结："
+                }
+            ]
+            summary = self.deepseek.chat_completion(messages)
+            if summary and summary.strip():
+                return summary.strip()
+            return chunk_content.strip()
+        except Exception as e:
+            logger.error(f"单个chunk summary失败: {str(e)}")
+            return chunk_content.strip()
 
     def summarize_and_aggregate(self, query: str, results: List[Any]) -> str:
         """
@@ -246,52 +272,50 @@ class RAGFlow:
             print(f"排序失败: {str(e)}")
             sorted_results = results
 
-        # 2. 过滤（取前20个结果，增加容错性）
-        filtered_results = sorted_results[:20]
+        # 2. 过滤（限制处理的chunk数量以提高性能，取前10个最相关的）
+        filtered_results = sorted_results[:10]  # 减少处理的数量，提高性能
         logger.info(f"过滤后结果数: {len(filtered_results)}")
         print(f"过滤后结果数: {len(filtered_results)}")
 
-        # 3. 准备用于信息融合的内容
-        # 更安全的内容提取
-        retrieval_context_parts = []
+        # 3. 对每个chunk单独进行summary，避免上下文过长
+        chunk_summaries = []
         for i, result in enumerate(filtered_results):
             try:
                 score = getattr(result, 'score', 0.0)
                 content = getattr(result, 'content', '')
                 if content:
-                    retrieval_context_parts.append(f"[结果{i+1} 相关性分数: {score:.3f}]\n{content}\n")
+                    logger.info(f"正在处理第{i+1}个chunk，分数: {score:.3f}")
+                    print(f"处理第{i+1}个chunk，分数: {score:.3f}...")
+                    # 对单个chunk进行summary
+                    chunk_summary = self.summarize_single_chunk(content)
+                    if chunk_summary:
+                        chunk_summaries.append(f"[结果{i+1} 相关性分数: {score:.3f}]\n{chunk_summary}\n")
             except Exception as e:
                 logger.warning(f"处理结果{i+1}时出错: {str(e)}")
                 continue
 
-        retrieval_context = "\n".join(retrieval_context_parts)
+        if not chunk_summaries:
+            logger.warning("所有检索结果处理后为空")
+            print("警告: 所有检索结果处理后为空")
+            return "检索结果处理后为空"
 
-        if not retrieval_context.strip():
-            logger.warning("所有检索结果内容为空")
-            print("警告: 所有检索结果内容为空")
-            return "检索结果内容为空"
+        # 4. 整合所有chunk的summary
+        combined_summaries = "\n".join(chunk_summaries)
+        logger.info(f"整合后的summary长度: {len(combined_summaries)} 字符")
+        print(f"\n整合后的summary长度: {len(combined_summaries)} 字符")
 
-        logger.info(f"准备的检索上下文长度: {len(retrieval_context)} 字符")
-        print(f"\n准备的检索上下文长度: {len(retrieval_context)} 字符")
-
-        # 4. 使用DeepSeek进行信息融合
-        logger.info("使用DeepSeek API进行信息融合...")
-        print("\n使用DeepSeek API进行信息融合...")
-        
-        # 如果上下文太长，进行截断
-        if len(retrieval_context) > 8000:
-            logger.warning(f"检索上下文过长 ({len(retrieval_context)} 字符)，进行截断")
-            retrieval_context = retrieval_context[:8000] + "...\n[内容已截断]"
-            print(f"警告: 检索上下文过长，已截断至8000字符")
+        # 5. 使用DeepSeek进行最终信息融合
+        logger.info("使用DeepSeek API进行最终信息融合...")
+        print("\n使用DeepSeek API进行最终信息融合...")
 
         messages = [
             {
                 "role": "system",
-                "content": "你是一个专业的信息分析助手。请仔细阅读用户的查询和提供的检索结果，然后：\n1. 提取所有与查询直接相关的关键信息\n2. 忽略不相关的内容\n3. 将相关信息整合成一段连贯的文本\n4. 不要添加任何检索结果中没有的信息\n5. 如果没有相关信息，直接返回'未找到相关信息'"
+                "content": "你是一个专业的信息分析助手。请仔细阅读用户的查询和提供的各段summary，然后：\n1. 提取所有与查询直接相关的关键信息\n2. 忽略不相关的内容\n3. 将相关信息整合成一段连贯的文本\n4. 不要添加任何检索结果中没有的信息\n5. 如果没有相关信息，直接返回'未找到相关信息'"
             },
             {
                 "role": "user",
-                "content": f"用户查询: {query}\n\n以下是检索到的相关内容，请进行整合：\n{retrieval_context}\n\n请输出整合后的信息："
+                "content": f"用户查询: {query}\n\n以下是各段内容的summary，请进行整合：\n{combined_summaries}\n\n请输出整合后的信息："
             }
         ]
         fused_info = self.deepseek.chat_completion(messages)
@@ -306,16 +330,7 @@ class RAGFlow:
             print("信息融合失败，使用备用方案")
             
             # 改进的备用方案
-            backup_parts = []
-            for i, result in enumerate(filtered_results[:5]):
-                try:
-                    content = getattr(result, 'content', '')
-                    if content:
-                        backup_parts.append(f"{i+1}. {content}")
-                except:
-                    continue
-            
-            backup_info = "\n".join(backup_parts)
+            backup_info = "\n".join(chunk_summaries[:5])  # 只使用前5个summary
 
             # 如果备用方案仍然为空，提供更明确的错误信息
             if not backup_info.strip():
@@ -352,39 +367,45 @@ class RAGFlow:
             print(f"注意：信息较短 ({len(fused_info)} 字符)，但仍进行语义判断")
 
         # 使用LLM进行智能语义判断
-        messages = [
-            {
-                "role": "system",
-                "content": "你是一个智能的信息评估专家。请仔细分析用户的查询和提供的信息：\n1. 不管信息长度如何，如果包含了回答用户查询所需的核心内容，能够形成一个完整、准确的答案，返回'足够'\n2. 即使信息较长，但缺少关键内容，无法回答用户问题，返回'不足'\n3. 特别注意：有些问题的答案本身就很短（如'是/否'、具体年份等），这些情况也应该返回'足够'\n4. 请只返回'足够'或'不足'，不要添加任何其他解释或说明"
-            },
-            {
-                "role": "user",
-                "content": f"查询: {query}\n\n可用信息:\n{fused_info}\n\n请严格按照要求判断并输出结果："
-            }
-        ]
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": "你是一个智能的信息评估专家。请仔细分析用户的查询和提供的信息：\n1. 不管信息长度如何，如果包含了回答用户查询所需的核心内容，能够形成一个完整、准确的答案，返回'足够'\n2. 即使信息较长，但缺少关键内容，无法回答用户问题，返回'不足'\n3. 特别注意：有些问题的答案本身就很短（如'是/否'、具体年份等），这些情况也应该返回'足够'\n4. 请只返回'足够'或'不足'，不要添加任何其他解释或说明"
+                },
+                {
+                    "role": "user",
+                    "content": f"查询: {query}\n\n可用信息:\n{fused_info}\n\n请严格按照要求判断并输出结果："
+                }
+            ]
 
-        judgment = self.deepseek.chat_completion(messages)
+            judgment = self.deepseek.chat_completion(messages)
 
-        if judgment:
-            # 清理和标准化返回结果
-            judgment = judgment.strip().lower()
-            logger.info(f"判断结果: {judgment}")
-            print(f"判断结果: {judgment}")
+            if judgment:
+                # 清理和标准化返回结果
+                judgment = judgment.strip().lower()
+                logger.info(f"判断结果: {judgment}")
+                print(f"判断结果: {judgment}")
 
-            # 更宽松的结果处理
-            if "足够" in judgment or "sufficient" in judgment:
-                return True
-            elif "不足" in judgment or "insufficient" in judgment:
-                return False
+                # 更宽松的结果处理
+                if "足够" in judgment or "sufficient" in judgment:
+                    return True
+                elif "不足" in judgment or "insufficient" in judgment:
+                    return False
+                else:
+                    # 如果返回格式不符合要求，默认认为信息足够，尝试生成响应
+                    logger.warning("返回格式异常，默认认为信息足够")
+                    print("返回格式异常，默认认为信息足够")
+                    return True
             else:
-                # 如果返回格式不符合要求，默认认为信息足够，尝试生成响应
-                logger.warning("返回格式异常，默认认为信息足够")
-                print("返回格式异常，默认认为信息足够")
+                logger.warning("LLM判断失败，默认认为信息足够，尝试生成响应")
+                print("LLM判断失败，默认认为信息足够，尝试生成响应")
+                # API调用失败时，默认认为信息足够，不中断流程
                 return True
-        else:
-            logger.warning("LLM判断失败，默认认为信息足够，尝试生成响应")
-            print("LLM判断失败，默认认为信息足够，尝试生成响应")
-            # API调用失败时，默认认为信息足够，不中断流程
+        except Exception as e:
+            logger.error(f"判断环节出错: {str(e)}")
+            print(f"判断环节出错: {str(e)}")
+            # 出错时默认认为信息足够，不中断流程
             return True
 
     def generate_response(self, query: str, fused_info: str) -> str:

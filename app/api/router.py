@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.routes import health_route, retrieval_route
+from app.api.routes import health_route, retrieval_route,questions_answers_route
 
 api_router = APIRouter()
 
@@ -11,3 +11,4 @@ api_router.include_router(health_route.router, tags=["health"])
 
 # 检索接口 /api/v1/semantic, /api/v1/keyword, /api/v1/hybrid, /api/v1/fulltext, /api/v1/text_match, /api/v1/phrase_match
 api_router.include_router(retrieval_route.router, tags=["retrieval"])
+api_router.include_router(questions_answers_route.router, tags=["qa"])

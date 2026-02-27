@@ -26,7 +26,7 @@ ENV HOST=0.0.0.0 \
     MILVUS_PORT=19530 \
     MILVUS_DB_NAME=default \
     COLLECTION_NAME=papers_chunks_collection     \
-    EMBEDDING_MODEL=workspace/bge-base-zh-v1.5
+    EMBEDDING_MODEL=workspace/jina-embeddings-v5-text-small
 
 EXPOSE 8000
 

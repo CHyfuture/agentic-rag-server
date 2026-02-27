@@ -1,19 +1,20 @@
 """检索服务，封装 BaseVector-Core RetrieverService。"""
 
-import os
 import logging
+import os
 from functools import lru_cache
-from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
 
+from base_db import DocumentClient, DocumentChunkClient
+from base_db.abstract.abstract_base_core import AbstractBaseCore
 from milvus_service import (
+    FulltextSearchRequest,
+    HybridSearchRequest,
+    KeywordSearchRequest,
+    PhraseMatchSearchRequest,
     RetrieverService,
     SemanticSearchRequest,
-    KeywordSearchRequest,
-    HybridSearchRequest,
-    FulltextSearchRequest,
     TextMatchSearchRequest,
-    PhraseMatchSearchRequest,
 )
 
 
@@ -39,14 +40,56 @@ def _configure_embedding_logging() -> None:
     logging.getLogger("transformers").setLevel(logging.ERROR)
 
 
+class _EnvAbstractCore(AbstractBaseCore):
+    """使用环境变量提供 BaseDB 认证信息的实现。"""
+
+    @staticmethod
+    def get_authorization() -> str:
+        token = os.getenv("DB_AUTHORIZATION", "")
+        if not token:
+            raise RuntimeError("环境变量 DB_AUTHORIZATION 未配置，无法访问 BaseDB 服务")
+        return token
+
+
+def _load_db_env() -> None:
+    """加载 .env 以便 BaseDB 读取 DB_SERVICE_URL 等配置。"""
+    from pathlib import Path
+    from dotenv import load_dotenv
+
+    project_root = Path(__file__).resolve().parents[2]
+    env_path = project_root / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+
+
+_document_client: Optional[DocumentClient] = None
+_chunk_client: Optional[DocumentChunkClient] = None
+
+
+def _get_document_client() -> DocumentClient:
+    global _document_client
+    if _document_client is None:
+        _load_db_env()
+        _document_client = DocumentClient(abstract_impl=_EnvAbstractCore())
+    return _document_client
+
+
+def _get_chunk_client() -> DocumentChunkClient:
+    global _chunk_client
+    if _chunk_client is None:
+        _load_db_env()
+        _chunk_client = DocumentChunkClient(abstract_impl=_EnvAbstractCore())
+    return _chunk_client
+
+
 def _resolve_embedding_model_path() -> tuple[str, bool]:
     """
     解析 EMBEDDING_MODEL：若为本地路径则转为绝对路径并返回 (path, local_only=True)。
     返回 (model_path_or_id, use_local_files_only)。
     """
-    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5").strip()
+    model_name = os.getenv("EMBEDDING_MODEL", "jinaai/jina-embeddings-v5-text-small").strip()
     if not model_name:
-        model_name = "BAAI/bge-base-zh-v1.5"
+        model_name = "jinaai/jina-embeddings-v5-text-small"
 
     # 视为本地路径：workspace/...、./、/、或包含 \（Windows）
     is_local_like = (
@@ -83,12 +126,38 @@ def _get_embedding_model():
 def _encode_query(query: str) -> list[float]:
     """将查询文本编码为向量。"""
     model = _get_embedding_model()
-    return model.encode([query], show_progress_bar=False)[0].tolist()
+    return model.encode([query], task="retrieval", show_progress_bar=False)[0].tolist()
 
 
 def _get_collection_name() -> str:
     """从 .env 获取检索集合名称。"""
     return os.getenv("COLLECTION_NAME", "papers_chunks_collection")
+
+
+async def get_original_text_by_doc_id(doc_id: int) -> str:
+    """从文档表获取原文 markdown_content。"""
+    try:
+        client = _get_document_client()
+        doc = await client.get_document(doc_id=doc_id)
+    except Exception:
+        return ""
+
+    if isinstance(doc, dict):
+        return doc.get("markdown_content") or ""
+    return getattr(doc, "markdown_content", "") or ""
+
+
+async def get_parent_content_by_chunk_id(chunk_id: int) -> str:
+    """根据 chunk_id 直接从文档切片表获取 parent_content。"""
+    try:
+        client = _get_chunk_client()
+        chunk = await client.get_document_chunk(chunk_id=chunk_id)
+    except Exception:
+        return ""
+
+    if isinstance(chunk, dict):
+        return chunk.get("parent_content") or ""
+    return getattr(chunk, "parent_content", "") or ""
 
 
 def _build_extra_params(**params: Any) -> dict[str, Any]:

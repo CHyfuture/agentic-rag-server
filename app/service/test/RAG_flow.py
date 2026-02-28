@@ -63,6 +63,7 @@ class DeepSeekClient:
             print(f"DeepSeek API调用失败: {str(e)}")
             return None
 
+
 class RAGFlow:
     """RAG流程实现类"""
 
@@ -197,7 +198,7 @@ class RAGFlow:
                 print("\n检索结果预览:")
                 for i, result in enumerate(all_results[:3]):
                     if hasattr(result, 'score') and hasattr(result, 'content'):
-                        print(f"结果 {i+1} (分数: {result.score:.3f}): {result.content[:100]}...")
+                        print(f"结果 {i + 1} (分数: {result.score:.3f}): {result.content[:100]}...")
 
             return all_results
 
@@ -209,23 +210,34 @@ class RAGFlow:
 
     def summarize_single_chunk(self, chunk_content: str) -> str:
         """
-        对单个chunk进行summary
-        Args:
-            chunk_content: chunk内容
-        Returns:
-            summary后的内容
+        对单个chunk进行summary，特别优化表格处理
         """
         try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": "你是一个专业的学术内容总结助手。请严格遵循以下要求：\n1. 阅读以下学术论文片段，提取核心信息和关键论点\n2. 总结必须准确、简洁，保留所有重要的学术观点和事实\n3. 不添加任何原文中没有的信息或个人解读\n4. 使用清晰的语言结构，突出重点内容\n5. 保持总结长度适中，避免过于冗长或过于简略\n6. 如果内容是论文摘要，保留其主要结构和核心结论"
-                },
-                {
-                    "role": "user",
-                    "content": f"请总结以下学术内容：\n{chunk_content}\n\n总结："
-                }
-            ]
+            # 检测是否包含表格内容
+            if '<table>' in chunk_content.lower() or '|' in chunk_content:
+                # 表格内容使用专门的prompt
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "你是一个专业的学术内容总结助手，特别擅长处理表格数据。请严格遵循以下要求：\n1. 如果内容包含表格，优先提取表格中的关键数据和趋势\n2. 用简洁的文字描述表格的主要发现和数据模式\n3. 突出重要的数值对比和结论\n4. 保持总结准确、简洁，避免冗长描述\n5. 如果是实验结果表格，重点说明方法间的性能对比"
+                    },
+                    {
+                        "role": "user",
+                        "content": f"请总结以下包含表格的学术内容：\n{chunk_content}\n\n表格总结："
+                    }
+                ]
+            else:
+                # 普通内容使用原有prompt
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "你是一个专业的学术内容总结助手。请严格遵循以下要求：\n1. 阅读以下学术论文片段，提取核心信息和关键论点\n2. 总结必须准确、简洁，保留所有重要的学术观点和事实\n3. 不添加任何原文中没有的信息或个人解读\n4. 使用清晰的语言结构，突出重点内容\n5. 保持总结长度适中，避免过于冗长或过于简略\n6. 如果内容是论文摘要，保留其主要结构和核心结论"
+                    },
+                    {
+                        "role": "user",
+                        "content": f"请总结以下学术内容：\n{chunk_content}\n\n总结："
+                    }
+                ]
             summary = self.deepseek.chat_completion(messages)
             if summary and summary.strip():
                 return summary.strip()
@@ -259,7 +271,7 @@ class RAGFlow:
                     return getattr(result, 'score', 0.0)
                 except:
                     return 0.0
-            
+
             sorted_results = sorted(results, key=get_score, reverse=True)
             logger.info(f"排序后结果数: {len(sorted_results)}")
             print(f"排序后结果数: {len(sorted_results)}")
@@ -280,14 +292,14 @@ class RAGFlow:
                 score = getattr(result, 'score', 0.0)
                 content = getattr(result, 'content', '')
                 if content:
-                    logger.info(f"正在处理第{i+1}个chunk，分数: {score:.3f}")
-                    print(f"处理第{i+1}个chunk，分数: {score:.3f}...")
+                    logger.info(f"正在处理第{i + 1}个chunk，分数: {score:.3f}")
+                    print(f"处理第{i + 1}个chunk，分数: {score:.3f}...")
                     # 对单个chunk进行summary
                     chunk_summary = self.summarize_single_chunk(content)
                     if chunk_summary:
-                        chunk_summaries.append(f"[结果{i+1} 相关性分数: {score:.3f}]\n{chunk_summary}\n")
+                        chunk_summaries.append(f"[结果{i + 1} 相关性分数: {score:.3f}]\n{chunk_summary}\n")
             except Exception as e:
-                logger.warning(f"处理结果{i+1}时出错: {str(e)}")
+                logger.warning(f"处理结果{i + 1}时出错: {str(e)}")
                 continue
 
         if not chunk_summaries:
@@ -324,7 +336,7 @@ class RAGFlow:
         else:
             logger.warning("信息融合失败，使用备用方案")
             print("信息融合失败，使用备用方案")
-            
+
             # 改进的备用方案
             backup_info = "\n".join(chunk_summaries[:5])  # 只使用前5个summary
 
@@ -419,11 +431,12 @@ class RAGFlow:
         messages = [
             {
                 "role": "system",
-                "content": "你是一个专业的问答助手。请根据提供的信息，回答用户的问题。回答要准确、全面、清晰，基于提供的信息，不要添加额外内容。如果信息不足，请说明无法回答。"
+                "content": "你是一个专业的论文问答助手。请根据提供的论文中的信息，简洁明了地回答用户的问题。要求：\n1. 回答要准确、重点突出，基于提供的信息\n2. 保持回答简洁，避免冗长的表述和不必要的细节，但重要内容不能缺失\n3. 如果信息不足，请直接说明无法回答\n4. 不要添加额外的推测或内容\n5. 使用清晰、专业的语言风格\n6. 如果是实验方法型的问题，需要准确概况出论文所使用的核心实验方法"
+
             },
             {
                 "role": "user",
-                "content": f"查询: {query}\n\n可用信息:\n{fused_info}\n\n请基于上述信息回答用户的问题："
+                "content": f"查询: {query}\n\n可用信息:\n{fused_info}\n\n请基于上述信息较为简洁完整地回答用户的问题："
             }
         ]
 
@@ -446,9 +459,9 @@ class RAGFlow:
             original_query: 用户原始查询
         """
         logger.info(f"RAG流程启动，原始查询: {original_query}")
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("RAG流程启动")
-        print("="*60)
+        print("=" * 60)
 
         iteration = 0
         context = None
@@ -476,8 +489,8 @@ class RAGFlow:
                 else:
                     # 更新上下文，继续下一轮
                     context = f"当前查询: {rewritten_query}\n检索结果: 未找到任何相关文档，请尝试更通用的查询或检查数据库连接。"
-                    logger.info(f"第 {iteration} 轮信息不足，更新上下文进行第 {iteration+1} 轮迭代")
-                    print(f"\n第 {iteration} 轮信息不足，更新上下文进行第 {iteration+1} 轮迭代")
+                    logger.info(f"第 {iteration} 轮信息不足，更新上下文进行第 {iteration + 1} 轮迭代")
+                    print(f"\n第 {iteration} 轮信息不足，更新上下文进行第 {iteration + 1} 轮迭代")
                     continue  # 继续下一轮迭代
 
             # 3. summary/排序/过滤/聚合
@@ -506,8 +519,8 @@ class RAGFlow:
                 else:
                     # 更新上下文，包含当前轮的信息
                     context = f"当前查询: {rewritten_query}\n已检索到的信息: {fused_info[:100]}...\n当前信息不足以完全回答问题，请优化查询以获取更相关的信息。"
-                    logger.info(f"更新上下文，进行第 {iteration+1} 轮迭代")
-                    print(f"更新上下文，进行第 {iteration+1} 轮迭代")
+                    logger.info(f"更新上下文，进行第 {iteration + 1} 轮迭代")
+                    print(f"更新上下文，进行第 {iteration + 1} 轮迭代")
                     continue  # 继续下一轮完整的RAG流程
 
         # 确保无论如何都有最终响应
@@ -515,11 +528,12 @@ class RAGFlow:
             final_response = "抱歉，经过多轮检索，仍无法获取足够的信息来回答您的查询。"
 
         logger.info(f"RAG流程结束，最终响应: {final_response[:100]}...")
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("RAG流程结束")
-        print("="*60)
+        print("=" * 60)
 
         return final_response
+
 
 if __name__ == "__main__":
     print("欢迎使用RAG问答系统！")
@@ -540,7 +554,7 @@ if __name__ == "__main__":
         rag = RAGFlow()
         response = rag.run(query)
 
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("最终回答：")
         print(response)
-        print("="*80)
+        print("=" * 80)

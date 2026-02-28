@@ -192,14 +192,8 @@ def _hash_id(s: str) -> int:
     return h % (2**63 - 1)
 
 
-_zero_vector_cache: Dict[int, List[float]] = {}
-
-
 def _zero_vector(dim: int) -> List[float]:
-    """返回 dim 维零向量，同 dim 复用缓存。"""
-    if dim not in _zero_vector_cache:
-        _zero_vector_cache[dim] = [0.0] * dim
-    return _zero_vector_cache[dim]
+    return [0.0] * dim
 
 
 def _get_default_collection_name() -> str:
@@ -255,7 +249,7 @@ def ensure_parent_child_collection(
     collection_name: str,
     dim: int,
 ) -> None:
-    """若集合不存在则按父子切片 schema 创建。"""
+    """若集合不存在则按父子切片 + 多向量 schema 创建；存在则补齐多向量索引。"""
     _connect_milvus()
 
     if utility.has_collection(collection_name, using="default"):
@@ -269,9 +263,10 @@ def ensure_parent_child_collection(
                         f"与当前模型维度 {dim} 不一致。请删除该集合后重新运行，或设置正确的 EMBEDDING_DIM。"
                     )
                 break
+        _create_vector_indexes_if_needed(collection_name)
         return
 
-    # 定义所有字段（包括主键、主向量和元数据）
+    # 定义所有字段（包括主键、主向量、多向量和元数据）
     fields: List[FieldSchema] = []
 
     # 主键
@@ -292,6 +287,30 @@ def ensure_parent_child_collection(
             dtype=DataType.FLOAT_VECTOR,
             dim=dim,
             description="对 content 编码的主向量",
+        )
+    )
+    fields.append(
+        FieldSchema(
+            name="vector_abstract",
+            dtype=DataType.FLOAT_VECTOR,
+            dim=dim,
+            description="对 abstract_text 编码的向量",
+        )
+    )
+    fields.append(
+        FieldSchema(
+            name="vector_keywords",
+            dtype=DataType.FLOAT_VECTOR,
+            dim=dim,
+            description="对 keywords_text 编码的向量",
+        )
+    )
+    fields.append(
+        FieldSchema(
+            name="vector_summary",
+            dtype=DataType.FLOAT_VECTOR,
+            dim=dim,
+            description="对 summary_text 编码的向量",
         )
     )
 
@@ -435,6 +454,26 @@ def ensure_parent_child_collection(
 
     StorageService.create_collection(req)
 
+    # 为其他向量字段创建索引
+    _create_vector_indexes_if_needed(collection_name)
+
+
+def _create_vector_indexes_if_needed(collection_name: str) -> None:
+    """为除主向量外的多向量字段创建索引（如未创建）。"""
+    coll = Collection(collection_name)
+    existing_idx_fields = {idx.field_name for idx in coll.indexes}
+
+    index_params = {
+        "metric_type": "IP",
+        "index_type": "HNSW",
+        "params": {"M": 16, "efConstruction": 200},
+    }
+
+    for vec_field in ("vector_abstract", "vector_keywords", "vector_summary"):
+        if vec_field in [f.name for f in coll.schema.fields]:
+            if vec_field not in existing_idx_fields:
+                coll.create_index(field_name=vec_field, index_params=index_params)
+
 
 # ===========================
 # JSON 处理与入库
@@ -467,46 +506,52 @@ def _get_id_from_item(it: Any) -> Optional[int]:
 def _extract_chunk_ids_from_batch_response(
     created: Any,
     records: List[Dict[str, Any]],
-) -> bool:
+) -> List[int]:
     """
-    从 create_document_chunk_batch 返回值中提取 chunk id，直接写入 records 的 id 字段。
+    从 create_document_chunk_batch 返回值中提取 chunk id，按 records 顺序一一对应。
 
-    期望 created 格式：{'code': 200, 'data': [{'id': ..., 'doc_id': ..., 'chunk_order': ..., 'chunk_text': ...}, ...], ...}
-    通过 (doc_id, chunk_index, content) 匹配每条 record 与返回值，保证 id 与 records 严格对应。
-    成功返回 True，失败返回 False。
+    通过 (doc_id, chunk_index, content) 匹配每条 record 与返回值，保证 id 与 records 严格对应，
+    不依赖 API 返回顺序。
     """
-    if not records or not isinstance(created, dict):
-        return False
-    items = created.get("data") or []
-    if len(items) != len(records):
-        return False
+    if created is None or not records:
+        return []
+    items = created if isinstance(created, (list, tuple)) else getattr(created, "data", None) or getattr(created, "items", None) or []
+    if not isinstance(items, (list, tuple)) or len(items) != len(records):
+        return []
 
-    def _record_key(r: Dict[str, Any]) -> tuple:
+    def _key(r: Dict[str, Any]) -> tuple:
         return (r.get("doc_id"), r.get("chunk_index"), r.get("content", ""))
 
-    def _item_key(it: Dict[str, Any]) -> tuple:
+    def _item_key(it: Any) -> tuple:
+        if isinstance(it, dict):
+            return (
+                it.get("doc_id"),
+                it.get("chunk_order") or it.get("chunk_index"),
+                it.get("chunk_text") or it.get("content", ""),
+            )
         return (
-            it.get("doc_id"),
-            it.get("chunk_order") or it.get("chunk_index"),
-            it.get("chunk_text") or it.get("content", ""),
+            getattr(it, "doc_id", None),
+            getattr(it, "chunk_order", None) or getattr(it, "chunk_index", None),
+            getattr(it, "chunk_text", "") or getattr(it, "content", ""),
         )
 
-    # 按 (doc_id, chunk_index, content) 分组，重复时按顺序消费
-    item_lists_by_key: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
+    # 按 key 分组，支持 (doc_id, chunk_index, content) 重复时按顺序消费
+    item_lists_by_key: Dict[tuple, List[Any]] = defaultdict(list)
     for it in items:
         item_lists_by_key[_item_key(it)].append(it)
 
+    ids: List[int] = []
     for r in records:
-        k = _record_key(r)
+        k = _key(r)
         lst = item_lists_by_key.get(k)
         if not lst:
-            return False
+            return []
         it = lst.pop(0)
         cid = _get_id_from_item(it)
         if cid is None:
-            return False
-        r["id"] = cid
-    return True
+            return []
+        ids.append(cid)
+    return ids
 
 
 def _extract_paper_metadata(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -560,6 +605,28 @@ def _build_records_and_chunks(
         return [], []
 
     keywords_text = "；".join(keywords_list)
+
+    # 批量编码 meta 文本，避免 3 次单独 encode 调用
+    meta_texts = [t for t in (abstract_text, keywords_text, summary_text) if t]
+    if meta_texts:
+        meta_vecs = model.encode(
+            meta_texts,
+            task="retrieval",
+            show_progress_bar=False,
+            batch_size=min(32, len(meta_texts)),
+        )
+        idx = 0
+        vec_abstract = meta_vecs[idx].tolist() if abstract_text else _zero_vector(dim)
+        if abstract_text:
+            idx += 1
+        vec_keywords = meta_vecs[idx].tolist() if keywords_text else _zero_vector(dim)
+        if keywords_text:
+            idx += 1
+        vec_summary = meta_vecs[idx].tolist() if summary_text else _zero_vector(dim)
+    else:
+        vec_abstract = _zero_vector(dim)
+        vec_keywords = _zero_vector(dim)
+        vec_summary = _zero_vector(dim)
 
     chunk_req = ChunkRequest(
         text=original_text,
@@ -618,8 +685,7 @@ def _build_records_and_chunks(
             to_encode,
             task="retrieval",
             show_progress_bar=False,
-            batch_size=128,
-            normalize_embeddings=True,
+            batch_size=64,
         )
         vec_iter = iter(content_vecs)
     else:
@@ -662,6 +728,9 @@ def _build_records_and_chunks(
             "institutions": institutions_str,
             "tags": "",
             "vector_content": vec_content,
+            "vector_abstract": vec_abstract,
+            "vector_keywords": vec_keywords,
+            "vector_summary": vec_summary,
         }
         records.append(record)
 
@@ -816,9 +885,12 @@ async def build_index_from_json_contents(
         # 使用 BaseDB 时：先写入 DB 获取 chunk_id，再替换 records 的 id 后写入 Milvus，保证 id 一致
         if not skip_base_db:
             created = await chunk_client.create_document_chunk_batch(chunk_models)
-            if not _extract_chunk_ids_from_batch_response(created, records):
+            chunk_ids = _extract_chunk_ids_from_batch_response(created, records)
+            if not chunk_ids:
                 skipped_files.append(filename)
                 continue
+            for rec, cid in zip(records, chunk_ids):
+                rec["id"] = cid
 
         insert_req = InsertRequest(
             collection_name=collection,

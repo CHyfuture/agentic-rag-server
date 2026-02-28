@@ -39,7 +39,7 @@ def main() -> None:
     parser.add_argument(
         "--input-dir",
         type=str,
-        default=r"D:\project\agentic-rag-server\前100修正\json_chinese",
+        default=r"D:\project\agentic-rag-server\前100修正\json_chinese_a",
         help="JSON 文件所在目录",
     )
     parser.add_argument(

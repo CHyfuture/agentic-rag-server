@@ -3,6 +3,7 @@
 import logging
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from base_db import DocumentClient, DocumentChunkClient
@@ -53,7 +54,6 @@ class _EnvAbstractCore(AbstractBaseCore):
 
 def _load_db_env() -> None:
     """加载 .env 以便 BaseDB 读取 DB_SERVICE_URL 等配置。"""
-    from pathlib import Path
     from dotenv import load_dotenv
 
     project_root = Path(__file__).resolve().parents[2]
@@ -120,13 +120,26 @@ def _get_embedding_model():
     from sentence_transformers import SentenceTransformer
 
     model_path_or_id, local_only = _resolve_embedding_model_path()
-    return SentenceTransformer(model_path_or_id, local_files_only=local_only)
+    try:
+        return SentenceTransformer(
+            model_path_or_id,
+            local_files_only=local_only,
+            trust_remote_code=True,
+        )
+    except TypeError:
+        return SentenceTransformer(model_path_or_id, local_files_only=local_only)
 
 
 def _encode_query(query: str) -> list[float]:
-    """将查询文本编码为向量。"""
+    """将查询文本编码为向量（已 L2 归一化）。"""
     model = _get_embedding_model()
-    return model.encode([query], task="retrieval", show_progress_bar=False)[0].tolist()
+    vec = model.encode(
+        [query],
+        task="retrieval",
+        show_progress_bar=False,
+        normalize_embeddings=True,
+    )[0].tolist()
+    return vec
 
 
 def _get_collection_name() -> str:

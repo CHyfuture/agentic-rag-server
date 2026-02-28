@@ -8,13 +8,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from dotenv import load_dotenv
 from pymilvus import (
     Collection,
-    CollectionSchema,
     DataType,
     FieldSchema,
     connections,
@@ -192,8 +192,14 @@ def _hash_id(s: str) -> int:
     return h % (2**63 - 1)
 
 
+_zero_vector_cache: Dict[int, List[float]] = {}
+
+
 def _zero_vector(dim: int) -> List[float]:
-    return [0.0] * dim
+    """返回 dim 维零向量，同 dim 复用缓存。"""
+    if dim not in _zero_vector_cache:
+        _zero_vector_cache[dim] = [0.0] * dim
+    return _zero_vector_cache[dim]
 
 
 def _get_default_collection_name() -> str:
@@ -249,7 +255,7 @@ def ensure_parent_child_collection(
     collection_name: str,
     dim: int,
 ) -> None:
-    """若集合不存在则按父子切片 + 多向量 schema 创建；存在则补齐多向量索引。"""
+    """若集合不存在则按父子切片 schema 创建。"""
     _connect_milvus()
 
     if utility.has_collection(collection_name, using="default"):
@@ -263,10 +269,9 @@ def ensure_parent_child_collection(
                         f"与当前模型维度 {dim} 不一致。请删除该集合后重新运行，或设置正确的 EMBEDDING_DIM。"
                     )
                 break
-        _create_vector_indexes_if_needed(collection_name)
         return
 
-    # 定义所有字段（包括主键、主向量、多向量和元数据）
+    # 定义所有字段（包括主键、主向量和元数据）
     fields: List[FieldSchema] = []
 
     # 主键
@@ -287,30 +292,6 @@ def ensure_parent_child_collection(
             dtype=DataType.FLOAT_VECTOR,
             dim=dim,
             description="对 content 编码的主向量",
-        )
-    )
-    fields.append(
-        FieldSchema(
-            name="vector_abstract",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=dim,
-            description="对 abstract_text 编码的向量",
-        )
-    )
-    fields.append(
-        FieldSchema(
-            name="vector_keywords",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=dim,
-            description="对 keywords_text 编码的向量",
-        )
-    )
-    fields.append(
-        FieldSchema(
-            name="vector_summary",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=dim,
-            description="对 summary_text 编码的向量",
         )
     )
 
@@ -336,11 +317,6 @@ def ensure_parent_child_collection(
                 name="chunk_index",
                 dtype=DataType.INT64,
                 description="当前块在文档中的索引",
-            ),
-            FieldSchema(
-                name="parent_chunk_id",
-                dtype=DataType.INT64,
-                description="父块对应的文件名（从 1 开始），无父块时为 -1",
             ),
             FieldSchema(
                 name="chunk_type",
@@ -459,26 +435,6 @@ def ensure_parent_child_collection(
 
     StorageService.create_collection(req)
 
-    # 为其他向量字段创建索引
-    _create_vector_indexes_if_needed(collection_name)
-
-
-def _create_vector_indexes_if_needed(collection_name: str) -> None:
-    """为除主向量外的多向量字段创建索引（如未创建）。"""
-    coll = Collection(collection_name)
-    existing_idx_fields = {idx.field_name for idx in coll.indexes}
-
-    index_params = {
-        "metric_type": "IP",
-        "index_type": "HNSW",
-        "params": {"M": 16, "efConstruction": 200},
-    }
-
-    for vec_field in ("vector_abstract", "vector_keywords", "vector_summary"):
-        if vec_field in [f.name for f in coll.schema.fields]:
-            if vec_field not in existing_idx_fields:
-                coll.create_index(field_name=vec_field, index_params=index_params)
-
 
 # ===========================
 # JSON 处理与入库
@@ -490,6 +446,67 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _get_id_from_item(it: Any) -> Optional[int]:
+    """从单条返回值中提取 id。"""
+    cid = None
+    if isinstance(it, dict):
+        cid = it.get("id") or it.get("chunk_id")
+        if cid is None and "data" in it:
+            inner = it.get("data")
+            if isinstance(inner, dict):
+                cid = inner.get("id") or inner.get("chunk_id")
+    elif hasattr(it, "id"):
+        cid = getattr(it, "id", None)
+    elif hasattr(it, "chunk_id"):
+        cid = getattr(it, "chunk_id", None)
+    return int(cid) if isinstance(cid, (int, float)) and int(cid) == cid else None
+
+
+def _extract_chunk_ids_from_batch_response(
+    created: Any,
+    records: List[Dict[str, Any]],
+) -> bool:
+    """
+    从 create_document_chunk_batch 返回值中提取 chunk id，直接写入 records 的 id 字段。
+
+    期望 created 格式：{'code': 200, 'data': [{'id': ..., 'doc_id': ..., 'chunk_order': ..., 'chunk_text': ...}, ...], ...}
+    通过 (doc_id, chunk_index, content) 匹配每条 record 与返回值，保证 id 与 records 严格对应。
+    成功返回 True，失败返回 False。
+    """
+    if not records or not isinstance(created, dict):
+        return False
+    items = created.get("data") or []
+    if len(items) != len(records):
+        return False
+
+    def _record_key(r: Dict[str, Any]) -> tuple:
+        return (r.get("doc_id"), r.get("chunk_index"), r.get("content", ""))
+
+    def _item_key(it: Dict[str, Any]) -> tuple:
+        return (
+            it.get("doc_id"),
+            it.get("chunk_order") or it.get("chunk_index"),
+            it.get("chunk_text") or it.get("content", ""),
+        )
+
+    # 按 (doc_id, chunk_index, content) 分组，重复时按顺序消费
+    item_lists_by_key: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
+    for it in items:
+        item_lists_by_key[_item_key(it)].append(it)
+
+    for r in records:
+        k = _record_key(r)
+        lst = item_lists_by_key.get(k)
+        if not lst:
+            return False
+        it = lst.pop(0)
+        cid = _get_id_from_item(it)
+        if cid is None:
+            return False
+        r["id"] = cid
+    return True
 
 
 def _extract_paper_metadata(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -526,11 +543,9 @@ def _build_records_and_chunks(
     doc_id: int,
     model: SentenceTransformer,
     dim: int,
-    start_child_id: int = 1,
-    start_parent_file_id: int = 1,
     tenant_id: int = 1,
     security_level: int = 1,
-) -> Tuple[List[Dict[str, Any]], List[DocumentChunkModel], int]:
+) -> Tuple[List[Dict[str, Any]], List[DocumentChunkModel]]:
     """从 JSON 数据构建 Milvus 记录与 DocumentChunkModel."""
     meta = _extract_paper_metadata(data)
     title: str = meta["title"]
@@ -542,25 +557,9 @@ def _build_records_and_chunks(
     original_text: str = meta["original_text"]
 
     if not original_text:
-        return [], [], 0
+        return [], []
 
     keywords_text = "；".join(keywords_list)
-
-    vec_abstract = (
-        model.encode([abstract_text], task="retrieval")[0].tolist()
-        if abstract_text
-        else _zero_vector(dim)
-    )
-    vec_keywords = (
-        model.encode([keywords_text], task="retrieval")[0].tolist()
-        if keywords_text
-        else _zero_vector(dim)
-    )
-    vec_summary = (
-        model.encode([summary_text], task="retrieval")[0].tolist()
-        if summary_text
-        else _zero_vector(dim)
-    )
 
     chunk_req = ChunkRequest(
         text=original_text,
@@ -568,7 +567,7 @@ def _build_records_and_chunks(
     )
     chunks = ChunkerService.chunk(chunk_req)
     if not chunks:
-        return [], [], 0
+        return [], []
 
     parents: Dict[int, Any] = {}
     children_by_parent_index: Dict[int, List[Any]] = {}
@@ -599,211 +598,91 @@ def _build_records_and_chunks(
         elif chunk_type == "child" and parent_idx is not None:
             children_by_parent_index.setdefault(parent_idx, []).append(c)
 
-    next_parent_file_id = start_parent_file_id
-    next_child_id = start_child_id
-
     records: List[Dict[str, Any]] = []
     chunk_models: List[DocumentChunkModel] = []
 
     embedding_model_name = os.getenv("EMBEDDING_MODEL", "jinaai/jina-embeddings-v5-text-small")
 
+    # 先按顺序收集所有 child 的 (chunk, parent_content)，再批量 encode
+    flat_children: List[Tuple[Any, str]] = []
     for parent_index in sorted(parents.keys()):
         parent_chunk = parents[parent_index]
         parent_content: str = getattr(parent_chunk, "content", "") or ""
-
-        file_id = next_parent_file_id
-        next_parent_file_id += 1
-
         for c in children_by_parent_index.get(parent_index, []):
-            content: str = getattr(c, "content", "") or ""
-            chunk_index: int = int(getattr(c, "chunk_index", 0) or 0)
-            start_index: int = int(getattr(c, "start_index", 0) or 0)
-            end_index: int = int(getattr(c, "end_index", 0) or 0)
+            flat_children.append((c, parent_content))
 
-            metadata: Dict[str, Any] = getattr(c, "metadata", {}) or {}
-            chunk_type: str = metadata.get("chunk_type") or "child"
-            section_title: str = metadata.get("section_title") or ""
-            section_path: str = metadata.get("section_path") or ""
-            page_val = metadata.get("page")
-            page: Optional[int] = int(page_val) if page_val is not None else None
-
-            if content:
-                vec_content = model.encode([content], task="retrieval")[0].tolist()
-            else:
-                vec_content = _zero_vector(dim)
-
-            id_val = next_child_id
-            next_child_id += 1
-
-            record: Dict[str, Any] = {
-                "id": id_val,
-                "doc_id": doc_id,
-                "kb_id": kb_id,
-                "security_level": security_level,
-                "chunk_index": chunk_index,
-                "parent_chunk_id": file_id,
-                "chunk_type": chunk_type,
-                "position_start": start_index,
-                "position_end": end_index,
-                "section_title": section_title,
-                "section_path": section_path,
-                "page": page if page is not None else -1,
-                "content": content,
-                "abstract_text": abstract_text,
-                "keywords_text": keywords_text,
-                "summary_text": summary_text,
-                "title": title,
-                "authors": authors_str,
-                "institutions": institutions_str,
-                "tags": "",
-                "vector_content": vec_content,
-                "vector_abstract": vec_abstract,
-                "vector_keywords": vec_keywords,
-                "vector_summary": vec_summary,
-            }
-            records.append(record)
-
-            chunk = DocumentChunkModel()
-            chunk.doc_id = doc_id
-            chunk.tenant_id = tenant_id
-            chunk.chunk_text = content
-            chunk.chunk_order = chunk_index
-            chunk.token_count = 0
-            chunk.embedding_model = embedding_model_name
-            chunk.parent_content = parent_content
-            chunk.extra = {
-                "section_title": section_title,
-                "section_path": section_path,
-                "page": page if page is not None else -1,
-                "kb_id": kb_id,
-                "vector_chunk_id": id_val,
-            }
-            chunk_models.append(chunk)
-
-    used_parent_files = next_parent_file_id - start_parent_file_id
-    return records, chunk_models, used_parent_files
-
-
-def process_one_json(
-    json_path: Path,
-    collection_name: str,
-    model: SentenceTransformer,
-    dim: int,
-    doc_id: int,
-    start_id: int = 1,
-    start_parent_file_id: int = 1,
-) -> tuple[int, int]:
-    """处理单个 JSON 文件：切片 + 向量化 + 插入集合。"""
-    data = _load_json(json_path)
-    records, _, used_parent_files = _build_records_and_chunks(
-        data=data,
-        kb_id=1,
-        doc_id=doc_id,
-        model=model,
-        dim=dim,
-        start_child_id=start_id,
-        start_parent_file_id=start_parent_file_id,
-        tenant_id=1,
-        security_level=1,
-    )
-    if not records:
-        return 0, 0
-
-    insert_req = InsertRequest(
-        collection_name=collection_name,
-        records=records,
-    )
-    ids = StorageService.insert(insert_req)
-    inserted_count = len(ids)
-    return inserted_count, used_parent_files
-
-
-def index_json_file(
-    file_path: str | Path,
-    collection_name: Optional[str] = None,
-    model_name: Optional[str] = None,
-    dim: Optional[int] = None,
-) -> int:
-    """索引单个 JSON 文件，返回插入记录数。
-
-    - collection_name 为空时使用环境变量 COLLECTION_NAME（默认为 `papers_chunks`）
-    - model_name 为空时使用环境变量 EMBEDDING_MODEL
-    - dim 为空时默认 768，可按模型维度覆盖
-    """
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"JSON 文件不存在: {path}")
-
-    collection = collection_name or _get_default_collection_name()
-    vector_dim = dim or int(os.getenv("EMBEDDING_DIM", "768"))
-
-    # 准备 Milvus 集合
-    ensure_parent_child_collection(collection, vector_dim)
-
-    # 加载/构建模型
-    if model_name:
-        os.environ["EMBEDDING_MODEL"] = model_name
-        model = _get_embedding_model()
-    else:
-        model = _get_embedding_model()
-
-    # 这里简单用 1 作为 doc_id 起始值，若有需要可将 doc_id / start_id 从外部传入
-    inserted, _ = process_one_json(
-        json_path=path,
-        collection_name=collection,
-        model=model,
-        dim=vector_dim,
-        doc_id=1,
-        start_id=1,
-        start_parent_file_id=1,
-    )
-    return inserted
-
-
-def index_json_dir(
-    input_dir: str | Path,
-    collection_name: Optional[str] = None,
-    model_name: Optional[str] = None,
-    dim: Optional[int] = None,
-) -> int:
-    """索引目录下所有 `.json` 文件，返回总插入记录数。"""
-    dir_path = Path(input_dir)
-    if not dir_path.exists():
-        raise FileNotFoundError(f"输入目录不存在: {dir_path}")
-
-    json_files = sorted(dir_path.glob("*.json"))
-    if not json_files:
-        return 0
-
-    collection = collection_name or _get_default_collection_name()
-    vector_dim = dim or int(os.getenv("EMBEDDING_DIM", "768"))
-
-    ensure_parent_child_collection(collection, vector_dim)
-
-    if model_name:
-        os.environ["EMBEDDING_MODEL"] = model_name
-        model = _get_embedding_model()
-    else:
-        model = _get_embedding_model()
-
-    total = 0
-    next_id = 1
-    next_parent_file_id = 1
-    for idx, json_path in enumerate(json_files, start=1):
-        inserted, used_parent_files = process_one_json(
-            json_path=json_path,
-            collection_name=collection,
-            model=model,
-            dim=vector_dim,
-            doc_id=idx,
-            start_id=next_id,
-            start_parent_file_id=next_parent_file_id,
+    contents = [getattr(c, "content", "") or "" for c, _ in flat_children]
+    to_encode = [t for t in contents if t]
+    if to_encode:
+        content_vecs = model.encode(
+            to_encode,
+            task="retrieval",
+            show_progress_bar=False,
+            batch_size=128,
+            normalize_embeddings=True,
         )
-        total += inserted
-        next_id += inserted
-        next_parent_file_id += used_parent_files
-    return total
+        vec_iter = iter(content_vecs)
+    else:
+        vec_iter = iter([])
 
+    for i, ((c, parent_content), content) in enumerate(zip(flat_children, contents), start=1):
+        chunk_index: int = int(getattr(c, "chunk_index", 0) or 0)
+        start_index: int = int(getattr(c, "start_index", 0) or 0)
+        end_index: int = int(getattr(c, "end_index", 0) or 0)
+
+        metadata: Dict[str, Any] = getattr(c, "metadata", {}) or {}
+        chunk_type: str = metadata.get("chunk_type") or "child"
+        section_title: str = metadata.get("section_title") or ""
+        section_path: str = metadata.get("section_path") or ""
+        page_val = metadata.get("page")
+        page: Optional[int] = int(page_val) if page_val is not None else None
+
+        vec_content = next(vec_iter).tolist() if content else _zero_vector(dim)
+
+        id_val = _hash_id(f"{doc_id}_{i}_{content[:80]}" if content else f"{doc_id}_{i}")
+
+        record: Dict[str, Any] = {
+            "id": id_val,
+            "doc_id": doc_id,
+            "kb_id": kb_id,
+            "security_level": security_level,
+            "chunk_index": chunk_index,
+            "chunk_type": chunk_type,
+            "position_start": start_index,
+            "position_end": end_index,
+            "section_title": section_title,
+            "section_path": section_path,
+            "page": page if page is not None else -1,
+            "content": content,
+            "abstract_text": abstract_text,
+            "keywords_text": keywords_text,
+            "summary_text": summary_text,
+            "title": title,
+            "authors": authors_str,
+            "institutions": institutions_str,
+            "tags": "",
+            "vector_content": vec_content,
+        }
+        records.append(record)
+
+        chunk = DocumentChunkModel()
+        chunk.doc_id = doc_id
+        chunk.tenant_id = tenant_id
+        chunk.chunk_text = content
+        chunk.chunk_order = chunk_index
+        chunk.token_count = 0
+        chunk.embedding_model = embedding_model_name
+        chunk.parent_content = parent_content
+        chunk.extra = {
+            "section_title": section_title,
+            "section_path": section_path,
+            "page": page if page is not None else -1,
+            "kb_id": kb_id,
+            "vector_chunk_id": id_val,
+        }
+        chunk_models.append(chunk)
+
+    return records, chunk_models
 
 async def build_index_from_json_contents(
     kb_id: int,
@@ -861,10 +740,6 @@ async def build_index_from_json_contents(
     milvus_records = 0
     skipped_files: List[str] = []
 
-    next_child_id = 1
-    next_parent_file_id = 1
-    next_doc_id = 1
-
     for filename, content in items:
         try:
             data = json.loads(content)
@@ -894,8 +769,7 @@ async def build_index_from_json_contents(
         }
 
         if skip_base_db:
-            doc_id = next_doc_id
-            next_doc_id += 1
+            doc_id = _hash_id(f"{filename}_{original_text[:100]}")
         else:
             document = DocumentModel()
             document.kb_id = kb_id
@@ -925,14 +799,12 @@ async def build_index_from_json_contents(
                 skipped_files.append(filename)
                 continue
 
-        records, chunk_models, used_parent_files = _build_records_and_chunks(
+        records, chunk_models = _build_records_and_chunks(
             data=data,
             kb_id=kb_id,
             doc_id=doc_id,
             model=model,
             dim=vector_dim,
-            start_child_id=next_child_id,
-            start_parent_file_id=next_parent_file_id,
             tenant_id=tenant_id,
             security_level=security_level,
         )
@@ -941,22 +813,23 @@ async def build_index_from_json_contents(
             skipped_files.append(filename)
             continue
 
+        # 使用 BaseDB 时：先写入 DB 获取 chunk_id，再替换 records 的 id 后写入 Milvus，保证 id 一致
+        if not skip_base_db:
+            created = await chunk_client.create_document_chunk_batch(chunk_models)
+            if not _extract_chunk_ids_from_batch_response(created, records):
+                skipped_files.append(filename)
+                continue
+
         insert_req = InsertRequest(
             collection_name=collection,
             records=records,
         )
         ids = StorageService.insert(insert_req)
 
-        if not skip_base_db:
-            await chunk_client.create_document_chunk_batch(chunk_models)
-
         inserted_count = len(ids)
         total_documents += 1
         total_chunks += len(chunk_models)
         milvus_records += inserted_count
-
-        next_child_id += inserted_count
-        next_parent_file_id += used_parent_files
 
     return {
         "kb_id": kb_id,

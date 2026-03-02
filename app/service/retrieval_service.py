@@ -156,7 +156,7 @@ async def get_original_text_by_doc_id(doc_id: int) -> str:
         return ""
 
     if isinstance(doc, dict):
-        return doc.get("markdown_content") or ""
+        return doc.get("data").get("markdown_content") or ""
     return getattr(doc, "markdown_content", "") or ""
 
 
@@ -169,7 +169,7 @@ async def get_parent_content_by_chunk_id(chunk_id: int) -> str:
         return ""
 
     if isinstance(chunk, dict):
-        return chunk.get("parent_content") or ""
+        return chunk.get("data").get("parent_content") or ""
     return getattr(chunk, "parent_content", "") or ""
 
 

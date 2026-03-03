@@ -234,15 +234,23 @@ class CorrectedRAGEvaluator:
         返回 {is_hit: bool, raw_decision: str}
         """
         system_prompt = (
-            "你是一个学术论文内容对齐助手。现在给出两段中文学术文本片段，"
+            "你是一个学术论文内容对齐助手。现在给出两段学术文本片段，"
             "请判断它们是否在描述同一篇论文中的同一个具体内容片段（同一事实/同一结论/同一表格或图像的描述）。\n"
-            "要求：\n"
-            "1. 如果两段文本只是措辞略有不同，但核心数值、对象、结论完全对应，则认为是“命中”。\n"
-            "2. 如果两段文本只是在同一篇论文中但描述的是不同位置的内容，或核心结论/数值明显不同，则认为是“未命中”。\n"
-            "3. 不要进行主观推测，严格基于给定文本判断。\n"
-            "4. 最终只输出“命中”或“未命中”四个字，不要添加任何解释。"
+            "判断时请做到：\n"
+            "1. 只要两段文本在描述的对象、数值（允许极小舍入误差）、关系和结论一致，即使标点符号不同、"
+            "   中文/英文混用、语序略有调整、前后多了少量上下文，也应判定为“命中”。\n"
+            "2. 如果两段文本虽然来自同一篇论文，但描述的是明显不同的位置或完全不同的结论，才判定为“未命中”。\n"
+            "3. 不要因为括号、顿号、单位写法等细枝末节差异而判定为“未命中”。\n"
+            "4. 不要进行主观臆测，仍需确保核心事实一致时才视为命中。\n"
+            "5. 最终只输出“命中”或“未命中”四个字，不要添加任何解释或其他文字。"
         )
-        user_prompt = f"标准chunk文本：\n{gt_chunk}\n\n检索到的chunk文本（可能被截断）：\n{retrieved_chunk}\n\n请根据要求判断："
+        user_prompt = (
+            "标准chunk文本：\n"
+            f"{gt_chunk}\n\n"
+            "检索到的chunk文本（可能被截断）：\n"
+            f"{retrieved_chunk}\n\n"
+            "请根据上述要求判断这两个片段是否在描述同一个具体内容片段，只输出“命中”或“未命中”："
+        )
 
         try:
             decision = self.rag_flow.deepseek.chat_completion(
@@ -271,12 +279,15 @@ class CorrectedRAGEvaluator:
         """
         基于 chunk 级别计算召回率 / 精确率 / F1，并记录详细对齐结果。
         """
+        gt_total = len(gt_chunks)
         if not gt_chunks or not retrieved_chunks:
             return {
                 "chunk召回率": 0.0,
                 "chunk精确率": 0.0,
                 "chunkF1": 0.0,
                 "chunk级对齐详情": [],
+                "命中标准chunk数量": 0,
+                "标准chunk总数": gt_total,
             }
 
         align_details: List[Dict[str, Any]] = []
@@ -290,14 +301,14 @@ class CorrectedRAGEvaluator:
                 judge_result = self._judge_chunk_match_with_llm(gt_text, retrieved_text)
                 is_hit = judge_result["is_hit"]
                 detail = {
-                    "gt_index": gt_idx,
-                    "gt_doc_id": gt.get("doc_id"),
-                    "gt_doc_title": gt.get("doc_title"),
-                    "gt_chunk文本": gt_text,
-                    "retrieved_rank": r_idx + 1,
-                    "retrieved_doc_id": r.get("doc_id"),
-                    "retrieved_doc_title": r.get("doc_title"),
-                    "retrieved_chunk预览": retrieved_text,
+                    "标准chunk编号": gt_idx,
+                    "doc_id": gt.get("doc_id"),
+                    "doc_title": gt.get("doc_title"),
+                    "标准chunk文本": gt_text,
+                    "检索chunk排序": r_idx + 1,
+                    "检索chunk_doc_id": r.get("doc_id"),
+                    "检索chunk_doc_title": r.get("doc_title"),
+                    "检索chunk预览": retrieved_text,
                     "LLM判定结果": judge_result["raw_decision"],
                     "是否命中": is_hit,
                 }
@@ -308,7 +319,6 @@ class CorrectedRAGEvaluator:
                     # 对于每个标准chunk，一旦找到一个命中即可停止继续判断，避免额外开销
                     break
 
-        gt_total = len(gt_chunks)
         retrieved_total = len(retrieved_chunks)
         hit_gt_count = len(hit_gt_indices)
         hit_retrieved_count = len(hit_retrieved_indices)
@@ -325,6 +335,8 @@ class CorrectedRAGEvaluator:
             "chunk精确率": round(precision, 3),
             "chunkF1": round(f1, 3),
             "chunk级对齐详情": align_details,
+            "命中标准chunk数量": hit_gt_count,
+            "标准chunk总数": gt_total,
         }
 
     def calculate_evaluation_metrics(self, case: Dict, response: str, exec_time: float, trace: Dict) -> Dict:
@@ -332,22 +344,98 @@ class CorrectedRAGEvaluator:
         ground_truth = str(case['ground_truth_answer']).lower().strip()
         rag_answer = str(response).lower().strip()
 
-        # 基础准确率检查
+        # 1. 基础准确率检查（布尔）
         auto_correct = self.check_accuracy(ground_truth, rag_answer)
 
-        # 完整性评估
-        completeness = self.assess_completeness(case['query'], ground_truth, rag_answer)
-
-        # 一致性检查
-        consistency = self.check_consistency(ground_truth, rag_answer)
-
-        # 根据问题类型设定推理能力
-        reasoning_ability = 0.8 if case['query_type'] == '多跳推理型' else 0.5
-
-        # chunk 级检索指标
+        # 2. chunk 级检索指标
         gt_chunks = self._build_gt_chunks(case)
         retrieved_chunks = self._build_retrieved_chunks_from_trace(trace, top_k=10)
         chunk_metrics = self._calculate_chunk_level_metrics(gt_chunks, retrieved_chunks)
+        chunk_recall = chunk_metrics.get("chunk召回率", 0.0)
+        chunk_f1 = chunk_metrics.get("chunkF1", 0.0)
+        hit_gt_count = chunk_metrics.get("命中标准chunk数量", 0)
+        gt_total = chunk_metrics.get("标准chunk总数", len(gt_chunks))
+        hit_ratio = hit_gt_count / max(1, gt_total or 1)
+
+        # 3. 答案完整性：文本覆盖度 + chunk召回率
+        text_completeness = self.assess_completeness(case['query'], ground_truth, rag_answer)
+        completeness = 0.6 * float(chunk_recall) + 0.4 * float(text_completeness)
+
+        # 4. 事实一致性：数值一致性 + 证据一致性
+        # 4.1 数值一致性 Sn
+        Sn = self.check_consistency(ground_truth, rag_answer)
+
+        # 4.2 证据一致性 Se，基于命中chunk内部的数值比对
+        import re
+
+        align_details = chunk_metrics.get("chunk级对齐详情", [])
+        evidence_scores: List[float] = []
+        for d in align_details:
+            if not d.get("是否命中"):
+                continue
+            std_text = str(d.get("标准chunk文本", ""))
+            ret_text = str(d.get("检索chunk预览", ""))
+            std_nums = re.findall(r'\d+\.?\d*', std_text)
+            ret_nums = re.findall(r'\d+\.?\d*', ret_text)
+            if not std_nums:
+                # 无数值，视为无冲突
+                evidence_scores.append(1.0)
+                continue
+            if not ret_nums:
+                # 标准有数值但检索chunk没有
+                evidence_scores.append(0.0)
+                continue
+            # 检查每个标准数值在检索chunk中是否有相近值
+            matched_all = True
+            matched_any = False
+            for t in std_nums:
+                t_val = float(t)
+                local_match = False
+                for r in ret_nums:
+                    r_val = float(r)
+                    if max(t_val, r_val) == 0:
+                        if t_val == r_val:
+                            local_match = True
+                            break
+                    else:
+                        if abs(t_val - r_val) / max(t_val, r_val) <= 0.2:
+                            local_match = True
+                            break
+                if local_match:
+                    matched_any = True
+                else:
+                    matched_all = False
+            if matched_all:
+                evidence_scores.append(1.0)
+            elif matched_any:
+                evidence_scores.append(0.5)
+            else:
+                evidence_scores.append(0.0)
+
+        if evidence_scores:
+            Se = sum(evidence_scores) / len(evidence_scores)
+        else:
+            # 无命中chunk时视为中性
+            Se = 0.5
+
+        consistency = 0.5 * float(Sn) + 0.5 * float(Se)
+
+        # 5. 推理能力：结合问题类型、证据充分性与答案质量
+        qtype = case.get('query_type', '')
+        if qtype == '多跳推理型':
+            w_d = 1.0
+        elif qtype == '方法/实验型':
+            w_d = 0.8
+        else:
+            w_d = 0.6
+
+        # 证据充分性因子 E
+        E = 0.5 * float(chunk_f1) + 0.5 * float(hit_ratio)
+
+        # 答案合理性因子 A
+        A = 0.5 * float(completeness) + 0.5 * float(consistency)
+
+        reasoning_ability = w_d * (0.6 * E + 0.4 * A)
 
         metrics: Dict[str, Any] = {
             '答案是否正确': auto_correct,
@@ -382,42 +470,64 @@ class CorrectedRAGEvaluator:
         return False
 
     def assess_completeness(self, query: str, truth: str, response: str) -> float:
-        """评估答案完整性 (0-1)"""
-        score = 0.5  # 基础分
-
+        """
+        评估答案在“文本层面”的完整性 (0-1)，只考虑数值与单位覆盖度。
+        最终答案完整性会在 calculate_evaluation_metrics 中叠加 chunk 召回率。
+        """
         import re
-        # 检查数值信息
-        if re.search(r'\d+\.?\d*', truth) and re.search(r'\d+\.?\d*', response):
-            score += 0.3
 
-        # 检查单位信息
-        units = ['倍', '百分点', '%', '张', '次', '层']
-        for unit in units:
-            if unit in truth and unit in response:
-                score += 0.2
-                break
+        # 基础分：回答非空
+        if not response.strip():
+            return 0.0
+        score = 0.3
+
+        # 数值覆盖：标准答案与回答中至少有一个共同数字
+        truth_nums = re.findall(r'\d+\.?\d*', truth)
+        resp_nums = re.findall(r'\d+\.?\d*', response)
+        common_nums = set(truth_nums) & set(resp_nums)
+        if truth_nums and resp_nums and common_nums:
+            score += 0.4
+
+        # 单位覆盖：至少一个共同单位
+        units = ['倍', '百分点', '%', '张', '次', '层', 'epoch', 'MB', 'kb', 'k']
+        if any(u in truth and u in response for u in units):
+            score += 0.3
 
         return min(1.0, score)
 
     def check_consistency(self, truth: str, response: str) -> float:
-        """检查事实一致性 (0-1)"""
-        score = 1.0
-
-        # 检查数值矛盾
+        """
+        检查数值层面的事实一致性 Sn (0-1)：
+        - 无数字 → 视为 1.0
+        - 有数字 → 统计标准答案中的数字，在回答中能找到相对误差≤20%的匹配比例。
+        """
         import re
         truth_nums = re.findall(r'\d+\.?\d*', truth)
         response_nums = re.findall(r'\d+\.?\d*', response)
 
-        if truth_nums and response_nums:
-            for t_num in truth_nums[:2]:
-                t_val = float(t_num)
-                for r_num in response_nums[:2]:
-                    r_val = float(r_num)
-                    if abs(t_val - r_val) / max(t_val, r_val) > 0.8:
-                        score -= 0.5
-                        break
+        if not truth_nums:
+            return 1.0
+        if not response_nums:
+            return 0.0
 
-        return max(0.0, score)
+        matched = 0
+        for t in truth_nums:
+            t_val = float(t)
+            local_match = False
+            for r in response_nums:
+                r_val = float(r)
+                if max(t_val, r_val) == 0:
+                    if t_val == r_val:
+                        local_match = True
+                        break
+                else:
+                    if abs(t_val - r_val) / max(t_val, r_val) <= 0.2:
+                        local_match = True
+                        break
+            if local_match:
+                matched += 1
+
+        return matched / len(truth_nums) if truth_nums else 1.0
 
     def generate_comprehensive_report(self):
         """生成综合评估报告"""
@@ -472,15 +582,224 @@ class CorrectedRAGEvaluator:
             '详细测试结果': self.results
         }
 
-        # 保存报告到指定目录
+        # 保存JSON报告到指定目录
         report_path = self.report_dir / 'rag_evaluation_report.json'
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
 
-        print(f"\n💾 评估报告已保存到: {report_path}")
+        # 生成静态HTML报告
+        html_path = self.report_dir / 'rag_evaluation_report.html'
+        html_content = self._build_html_report(report)
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+
+        print(f"\n💾 评估JSON报告已保存到: {report_path}")
+        print(f"💾 评估HTML报告已保存到: {html_path}")
 
         # 打印摘要
         self.print_evaluation_summary(report)
+
+    def _build_html_report(self, report: Dict[str, Any]) -> str:
+        """基于JSON报告生成适合人眼阅读的详细HTML报告。"""
+        eval_info = report.get('评估基本信息', {})
+        avg_metrics = report.get('平均性能指标', {})
+        type_stats = report.get('按问题类型分析', {})
+        details = report.get('详细测试结果', [])
+
+        def esc(s: Any) -> str:
+            return (
+                str(s)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        html_parts = []
+        html_parts.append("<!DOCTYPE html>")
+        html_parts.append("<html lang='zh-CN'>")
+        html_parts.append("<head>")
+        html_parts.append("<meta charset='utf-8' />")
+        html_parts.append("<title>RAG 评估报告</title>")
+        html_parts.append(
+            "<style>"
+            "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:16px;}"
+            "h1,h2,h3{margin-top:16px;}"
+            "table{border-collapse:collapse;width:100%;margin:8px 0;}"
+            "th,td{border:1px solid #ddd;padding:4px 8px;font-size:13px;vertical-align:top;}"
+            "th{background:#f5f5f5;text-align:left;}"
+            "details{margin:8px 0;border:1px solid #ddd;border-radius:4px;padding:4px 8px;}"
+            "summary{font-weight:bold;cursor:pointer;}"
+            ".hit{background:#e6ffed;}"
+            ".miss{background:#ffecec;}"
+            ".metric-badge{display:inline-block;padding:2px 6px;border-radius:4px;background:#f5f5f5;margin-right:4px;font-size:12px;}"
+            ".section-header{margin-top:24px;border-bottom:2px solid #ddd;padding-bottom:4px;}"
+            "</style>"
+        )
+        html_parts.append("</head>")
+        html_parts.append("<body>")
+
+        # 概览
+        html_parts.append("<h1>RAG 系统评估报告</h1>")
+        html_parts.append("<div>")
+        html_parts.append(f"<div class='metric-badge'>评估时间：{esc(eval_info.get('评估时间', ''))}</div>")
+        html_parts.append(f"<div class='metric-badge'>测试用例总数：{esc(eval_info.get('测试用例总数', ''))}</div>")
+        html_parts.append(
+            f"<div class='metric-badge'>自动判定的问答匹配率：{esc(eval_info.get('自动判定的问答匹配率', ''))}</div>"
+        )
+        html_parts.append("</div>")
+
+        # 平均指标
+        html_parts.append("<h2 class='section-header'>整体平均指标</h2>")
+        html_parts.append("<table>")
+        html_parts.append("<tr><th>指标</th><th>数值</th></tr>")
+        for k in [
+            "平均chunk召回率",
+            "平均chunk精确率",
+            "平均chunkF1",
+            "平均答案完整性",
+            "平均事实一致性",
+            "平均推理能力",
+            "平均响应时间",
+        ]:
+            if k in avg_metrics:
+                html_parts.append(f"<tr><td>{esc(k)}</td><td>{esc(avg_metrics[k])}</td></tr>")
+        html_parts.append("</table>")
+
+        # 按问题类型分析
+        if type_stats:
+            html_parts.append("<h2 class='section-header'>按问题类型分析</h2>")
+            html_parts.append("<table>")
+            html_parts.append(
+                "<tr><th>问题类型</th><th>数量</th><th>自动判定的问答匹配率</th>"
+                "<th>平均chunk召回率</th><th>平均chunk精确率</th><th>平均chunkF1</th><th>平均耗时</th></tr>"
+            )
+            for qtype, stats in type_stats.items():
+                html_parts.append(
+                    "<tr>"
+                    f"<td>{esc(qtype)}</td>"
+                    f"<td>{esc(stats.get('数量', ''))}</td>"
+                    f"<td>{esc(stats.get('自动判定的问答匹配率', ''))}</td>"
+                    f"<td>{esc(stats.get('平均chunk召回率', ''))}</td>"
+                    f"<td>{esc(stats.get('平均chunk精确率', ''))}</td>"
+                    f"<td>{esc(stats.get('平均chunkF1', ''))}</td>"
+                    f"<td>{esc(stats.get('平均耗时', ''))}</td>"
+                    "</tr>"
+                )
+            html_parts.append("</table>")
+
+        # 详细用例
+        html_parts.append("<h2 class='section-header'>详细测试结果</h2>")
+        for item in details:
+            sample_id = item.get("sample_id", "")
+            query = item.get("query", "")
+            query_type = item.get("query_type", "")
+            level = item.get("level", "")
+            metrics = item.get("评估指标", {})
+
+            summary_title = f"sample_id={sample_id} | level={level} | type={query_type}"
+            html_parts.append("<details>")
+            html_parts.append(f"<summary>{esc(summary_title)}</summary>")
+
+            # 基本信息
+            html_parts.append("<h3>基本信息</h3>")
+            html_parts.append("<table>")
+            html_parts.append("<tr><th>字段</th><th>内容</th></tr>")
+            html_parts.append(f"<tr><td>sample_id</td><td>{esc(sample_id)}</td></tr>")
+            html_parts.append(f"<tr><td>query</td><td>{esc(query)}</td></tr>")
+            html_parts.append(f"<tr><td>query_type</td><td>{esc(query_type)}</td></tr>")
+            html_parts.append(f"<tr><td>level</td><td>{esc(level)}</td></tr>")
+            html_parts.append(f"<tr><td>标准答案</td><td>{esc(item.get('标准答案', ''))}</td></tr>")
+            html_parts.append(f"<tr><td>系统回答</td><td>{esc(item.get('系统回答', ''))}</td></tr>")
+            html_parts.append(f"<tr><td>耗时(秒)</td><td>{esc(round(item.get('耗时', 0.0), 3))}</td></tr>")
+            html_parts.append("</table>")
+
+            # 指标信息
+            html_parts.append("<h3>评估指标</h3>")
+            html_parts.append("<table>")
+            html_parts.append("<tr><th>指标</th><th>数值</th></tr>")
+            for k, v in metrics.items():
+                if k == "chunk级对齐详情":
+                    continue
+                html_parts.append(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>")
+            html_parts.append("</table>")
+
+            # 标准chunk信息
+            std_chunks = item.get("标准chunk信息", [])
+            if std_chunks:
+                html_parts.append("<h3>标准chunk信息</h3>")
+                html_parts.append("<table>")
+                html_parts.append("<tr><th>doc_id</th><th>doc_title</th><th>标准chunk文本</th></tr>")
+                for c in std_chunks:
+                    html_parts.append(
+                        "<tr>"
+                        f"<td>{esc(c.get('doc_id', ''))}</td>"
+                        f"<td>{esc(c.get('doc_title', ''))}</td>"
+                        f"<td>{esc(c.get('chunk文本', ''))}</td>"
+                        "</tr>"
+                    )
+                html_parts.append("</table>")
+
+            # 检索到的chunk信息
+            retrieved_chunks = item.get("检索到的chunk信息", [])
+            if retrieved_chunks:
+                html_parts.append("<h3>检索到的chunk信息（来自RAG流程trace的最终一轮）</h3>")
+                html_parts.append("<table>")
+                html_parts.append("<tr><th>rank</th><th>doc_id</th><th>doc_title</th><th>score</th><th>chunk预览</th></tr>")
+                for c in retrieved_chunks:
+                    html_parts.append(
+                        "<tr>"
+                        f"<td>{esc(c.get('rank', ''))}</td>"
+                        f"<td>{esc(c.get('doc_id', ''))}</td>"
+                        f"<td>{esc(c.get('doc_title', ''))}</td>"
+                        f"<td>{esc(c.get('score', ''))}</td>"
+                        f"<td>{esc(c.get('content_preview', ''))}</td>"
+                        "</tr>"
+                    )
+                html_parts.append("</table>")
+
+            # chunk级对齐详情
+            align_details = metrics.get("chunk级对齐详情", [])
+            if align_details:
+                html_parts.append("<h3>chunk级对齐详情</h3>")
+                html_parts.append("<table>")
+                html_parts.append(
+                    "<tr>"
+                    "<th>标准chunk编号</th><th>doc_id</th><th>doc_title</th><th>标准chunk文本</th>"
+                    "<th>检索chunk排序</th><th>检索chunk_doc_id</th><th>检索chunk_doc_title</th>"
+                    "<th>检索chunk预览</th><th>LLM判定结果</th><th>是否命中</th>"
+                    "</tr>"
+                )
+                for d in align_details:
+                    hit = d.get("是否命中", False)
+                    row_class = "hit" if hit else "miss"
+                    html_parts.append(
+                        f"<tr class='{row_class}'>"
+                        f"<td>{esc(d.get('标准chunk编号', ''))}</td>"
+                        f"<td>{esc(d.get('doc_id', ''))}</td>"
+                        f"<td>{esc(d.get('doc_title', ''))}</td>"
+                        f"<td>{esc(d.get('标准chunk文本', ''))}</td>"
+                        f"<td>{esc(d.get('检索chunk排序', ''))}</td>"
+                        f"<td>{esc(d.get('检索chunk_doc_id', ''))}</td>"
+                        f"<td>{esc(d.get('检索chunk_doc_title', ''))}</td>"
+                        f"<td>{esc(d.get('检索chunk预览', ''))}</td>"
+                        f"<td>{esc(d.get('LLM判定结果', ''))}</td>"
+                        f"<td>{esc('命中' if hit else '未命中')}</td>"
+                        "</tr>"
+                    )
+                html_parts.append("</table>")
+
+            # 可选：原始JSON
+            html_parts.append("<details>")
+            html_parts.append("<summary>查看此用例的原始JSON</summary>")
+            html_parts.append("<pre style='white-space:pre-wrap;font-size:12px;'>")
+            html_parts.append(esc(json.dumps(item, ensure_ascii=False, indent=2)))
+            html_parts.append("</pre>")
+            html_parts.append("</details>")
+
+            html_parts.append("</details>")
+
+        html_parts.append("</body></html>")
+        return "".join(html_parts)
 
     def get_structured_metric_explanations(self) -> Dict[str, Any]:
         """获取结构化的指标说明"""
@@ -521,36 +840,36 @@ class CorrectedRAGEvaluator:
                     '当前实现': '自动判断，需人工复核'
                 },
                 '答案完整性': {
-                    '定义': '回答是否包含问题所需的完整信息',
-                    '计算公式': '基础分0.5 + 数值信息0.3 + 单位信息0.2',
+                    '定义': '回答在证据层面和文本层面覆盖问题所需信息的程度',
+                    '计算公式': '答案完整性 = 0.6 * chunk召回率 + 0.4 * 文本完整性',
                     '评分细则': {
-                        '基础分 (0.5)': '回答非空且有一定相关性',
-                        '数值信息 (0.3)': '包含与标准答案相关的数值',
-                        '单位信息 (0.2)': '包含正确的计量单位'
+                        '文本完整性': '根据回答是否包含与标准答案一致的关键数值和单位打分（0~1）',
+                        'chunk召回率': '命中的标准chunk数量 / 标准chunk总数量'
                     },
                     '理想值': '1.0',
-                    '说明': '评估回答的全面性和详尽程度'
+                    '说明': '既要求检索阶段覆盖足够多的标准证据chunk，也要求最终回答文本中包含关键数值和单位'
                 },
                 '事实一致性': {
-                    '定义': '回答中是否存在与标准答案相矛盾的事实',
-                    '计算公式': '基础分1.0 - 矛盾扣分',
-                    '扣分规则': {
-                        '数值矛盾 (扣0.5)': '相同概念的数值差异超过80%',
-                        '逻辑矛盾 (扣0.3)': '否定词使用不一致'
+                    '定义': '回答中的关键事实是否与标准答案以及对应证据chunk保持一致',
+                    '计算公式': '事实一致性 = 0.5 * 数值一致性 + 0.5 * 证据一致性',
+                    '评分细则': {
+                        '数值一致性': '比较标准答案与系统回答中的数字，统计相对误差<=20%的匹配比例',
+                        '证据一致性': '在命中的标准chunk及其对应检索chunk中，检查数值是否一致或仅有微小误差'
                     },
                     '理想值': '1.0',
-                    '说明': '确保生成内容的事实准确性'
+                    '说明': '既避免回答中的数值与标准答案明显冲突，也要求这些数值在命中的证据chunk中能够找到依据'
                 }
             },
             '整体性能指标': {
                 '推理能力': {
-                    '定义': '处理复杂推理问题的能力',
+                    '定义': '系统利用检索到的证据进行推理并给出合理答案的能力',
                     '计算方法': {
-                        '多跳推理型问题': '0.8',
-                        '方法/实验型问题': '0.7',
-                        '事实型问题': '0.5'
+                        '难度权重 w_d': '多跳推理型问题 1.0，方法/实验型 0.8，事实型 0.6',
+                        '证据因子 E': 'E = 0.5 * chunkF1 + 0.5 * (命中标准chunk数量 / 标准chunk总数)',
+                        '答案合理性因子 A': 'A = 0.5 * 答案完整性 + 0.5 * 事实一致性',
+                        '推理能力': '推理能力 = w_d * (0.6 * E + 0.4 * A)'
                     },
-                    '说明': '根据不同问题类型的复杂程度设定基准值'
+                    '说明': '多跳推理型问题在命中足够多证据chunk且F1较高时推理能力得分最高，事实型问题的推理能力上限相对较低'
                 },
                 '平均响应时间': {
                     '定义': '系统处理单个查询的平均耗时',

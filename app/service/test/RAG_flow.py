@@ -43,11 +43,10 @@ def _print_warning(text: str) -> None:
         print(str(text))
 
 
-# 日志与trace文件路径（统一放在当前 test 目录）
+# 日志文件路径（统一放在当前 test 目录）
 _CURRENT_DIR = Path(__file__).resolve().parent
 _CURRENT_DIR.mkdir(parents=True, exist_ok=True)
 RAG_FLOW_LOG_PATH = _CURRENT_DIR / "rag_flow.log"
-RAG_FLOW_TRACE_LOG_PATH = _CURRENT_DIR / "rag_flow_trace.log"
 
 # 设置日志（仅写入 test 目录下的 rag_flow.log）
 logger = logging.getLogger("RAGFlow")
@@ -61,13 +60,11 @@ if not logger.handlers:
 
 def _append_trace_log(trace: Dict[str, Any]) -> None:
     """
-    将本次 RAG 流程的完整 trace 以结构化形式追加到 rag_flow_trace.log 中。
-    使用缩进 JSON，方便人工阅读和后续程序分析。
+    将本次 RAG 流程的完整 trace 以结构化形式写入统一的 rag_flow.log 中。
+    使用一条 TRACE 级别的JSON记录，便于后续程序和人工同时分析。
     """
     try:
-        with open(RAG_FLOW_TRACE_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(trace, ensure_ascii=False, indent=2))
-            f.write("\n" + "=" * 80 + "\n")
+        logger.info("TRACE %s", json.dumps(trace, ensure_ascii=False))
     except Exception as e:
         # 不影响主流程
         logger.error(f"写入RAG流程trace日志失败: {str(e)}")
@@ -264,7 +261,7 @@ class RAGFlow:
                         {
                             "chunk_id": chunk_id,
                             "score": getattr(result, "score", None),
-                            "content_preview": getattr(result, "content", "")[:200] if hasattr(result, "content") else "",
+                            "content_preview": getattr(result, "content", "")[:400] if hasattr(result, "content") else "",
                             "doc_id": info["doc_id"],
                             "doc_title": info["doc_title"],
                         }
@@ -296,7 +293,7 @@ class RAGFlow:
                             {
                                 "chunk_id": chunk_id,
                                 "score": getattr(result, "score", None),
-                                "content_preview": getattr(result, "content", "")[:200] if hasattr(result, "content") else "",
+                                "content_preview": getattr(result, "content", "")[:400] if hasattr(result, "content") else "",
                                 "doc_id": info["doc_id"],
                                 "doc_title": info["doc_title"],
                             }
@@ -328,7 +325,7 @@ class RAGFlow:
                             {
                                 "chunk_id": chunk_id,
                                 "score": getattr(result, "score", None),
-                                "content_preview": getattr(result, "content", "")[:200] if hasattr(result, "content") else "",
+                                "content_preview": getattr(result, "content", "")[:400] if hasattr(result, "content") else "",
                                 "doc_id": info["doc_id"],
                                 "doc_title": info["doc_title"],
                             }
@@ -349,7 +346,7 @@ class RAGFlow:
                         "rank": idx + 1,
                         "chunk_id": getattr(result, "chunk_id", None),
                         "score": getattr(result, "score", None),
-                        "content_preview": getattr(result, "content", "")[:200] if hasattr(result, "content") else "",
+                        "content_preview": getattr(result, "content", "")[:400] if hasattr(result, "content") else "",
                         "doc_id": info["doc_id"],
                         "doc_title": info["doc_title"],
                     }

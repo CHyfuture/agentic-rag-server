@@ -1,0 +1,159 @@
+[
+  {
+    "sample_id": "001",
+    "query": "论文《3D-MVP：用于操作的3D多视图预训练》中，用于预训练的掩码自编码器的掩码概率是多少？",
+    "query_type": "事实型",
+    "level": "简单",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "3D-MVP: 3D Multiview Pretraining for Manipulation (3D-MVP：用于操作的3D多视图预训练)",
+        "relevant_chunks": [
+          "在实现细节部分提到：“我们使用的批次大小为3，掩码概率为0.75。”"
+        ]
+      }
+    ],
+    "ground_truth_answer": "0.75"
+  },
+  {
+    "sample_id": "002",
+    "query": "ISSU数据集的训练集（ISSU-Train）包含多少张带有标注的图像？",
+    "query_type": "事实型",
+    "level": "简单",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "A Dataset for Semantic Segmentation in the Presence of Unknowns (一个包含未知类别的语义分割数据集)",
+        "relevant_chunks": [
+          "第3.6节统计数据中：“ISSU-Train 的训练集包含 3436 张图像，而验证集包含 762 张图像。”"
+        ]
+      }
+    ],
+    "ground_truth_answer": "3436张"
+  },
+  {
+    "sample_id": "003",
+    "query": "论文《ACAttack：基于多模态响应解耦的自适应跨模态攻击RGB-T跟踪器》中，用于评估攻击性能的两个RGB-T跟踪数据集分别是什么？",
+    "query_type": "事实型",
+    "level": "简单",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "ACAttack: Adaptive Cross Attacking RGB-T Tracker via Multi-Modal Response Decoupling (ACAttack：基于多模态响应解耦的自适应跨模态攻击RGB-T跟踪器)",
+        "relevant_chunks": [
+          "第4.1.1节中提到：“我们在 RGBT234 [12] 和 LasHeR [13] 数据集上进行实验。”"
+        ]
+      }
+    ],
+    "ground_truth_answer": "RGBT234 和 LasHeR"
+  },
+  {
+    "sample_id": "004",
+    "query": "在Mona的多认知视觉滤波器中，使用的三个深度可分离卷积的卷积核大小分别是多少？",
+    "query_type": "方法/实验型",
+    "level": "中等",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "5% > 100%: Breaking Performance Shackles of Full Fine-Tuning on Visual Recognition Tasks (5%＞100%：打破视觉识别任务上全参数微调的性能桎梏)",
+        "relevant_chunks": [
+          "第3.2节：“Mona中采用深度可分离卷积[55]而非标准卷积，以最小化额外的参数量。具体来说，上游特征在下投影后经过三个DWConv滤波器。卷积核大小分别为 3×3、5×5 和 7×7。”"
+        ]
+      }
+    ],
+    "ground_truth_answer": "3×3、5×5和7×7"
+  },
+  {
+    "sample_id": "005",
+    "query": "SlotMIM在COCO+数据集上预训练时，训练了多少个epoch？",
+    "query_type": "方法/实验型",
+    "level": "中等",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "A Data-Centric Revisit of Pre-Trained Vision Models for Robot Learning (面向机器人学习的预训练视觉模型：以数据为中心的再审视)",
+        "relevant_chunks": [
+          "第4.1节中：“在241K数据规模下，所有方法都训练800个周期。”",
+          "第4.3节消融实验中，“所有模型均在COCO+数据集上训练800个周期。”"
+        ]
+      }
+    ],
+    "ground_truth_answer": "800个epoch"
+  },
+  {
+    "sample_id": "006",
+    "query": "在ADD方法中，生成校准归因图（CAM）时引入了哪两个关键创新？",
+    "query_type": "方法/实验型",
+    "level": "中等",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "ADD: Attribution-Driven Data Augmentation Framework for Boosting Image Super-Resolution (ADD：一种用于提升图像超分辨率的属性驱动数据增强框架)",
+        "relevant_chunks": [
+          "第3.3节开头：“CAM 建立在 LAM [9] 和积分梯度（IG）[11,26] 的基础上，引入了两个关键创新：全局特征检测器和校准积分梯度。”"
+        ]
+      }
+    ],
+    "ground_truth_answer": "全局特征检测器和校准积分梯度"
+  },
+  {
+    "sample_id": "007",
+    "query": "4DGC方法相比于3DGStream，在保持相当重建质量的情况下，实现了大约多少倍的压缩率？请结合论文中的结果说明。",
+    "query_type": "多跳推理型",
+    "level": "中等",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "4DGC: Rate-Aware 4D Gaussian Compression for Efficient Streamable Free-Viewpoint Video (4DGC：面向高效可流式自由视点视频的码率感知四维高斯压缩)",
+        "relevant_chunks": [
+          "摘要中提到：“与最先进的方法3DGStream[61]相比，我们的方法实现了大约16x的压缩率且没有质量下降。”",
+          "实验部分图1显示与3DGStream的视觉质量和码率对比。",
+          "表1显示3DGStream大小为8.1 MB，4DGC为0.5 MB，压缩比约为16.2倍。"
+        ]
+      }
+    ],
+    "ground_truth_answer": "大约16倍。"
+  },
+  {
+    "sample_id": "008",
+    "query": "在MSD肝脏肿瘤数据集上，同时使用像素级和特征级残差学习的DiffuGTS相比仅使用像素级残差图的变体，DSC指标提升了多少个百分点？",
+    "query_type": "多跳推理型",
+    "level": "中等",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "Advancing Generalizable Tumor Segmentation with Anomaly-Aware Open-Vocabulary Attention Maps and Frozen Foundation Diffusion Models (基于异常感知开放词汇注意力图与冻结基础扩散模型推进泛化性肿瘤分割)",
+        "relevant_chunks": [
+          "表6中，DiffuGTS (P_r)的DSC为61.85%。",
+          "表6中，DiffuGTS (P_r + F_r)的DSC为63.23%。"
+        ]
+      }
+    ],
+    "ground_truth_answer": "1.38个百分点"
+  },
+  {
+    "sample_id": "009",
+    "query": "在CLIP-AST的消融实验中，层粒度选择相比全局粒度选择在11个数据集上的平均准确率提升了多少？",
+    "query_type": "多跳推理型",
+    "level": "中等",
+    "domain": "CS",
+    "relevant_documents": [
+      {
+        "doc_id": "",
+        "doc_title": "Adaptive Parameter Selection for Tuning Vision-Language Models (视觉语言模型调优的自适应参数选择)",
+        "relevant_chunks": [
+          "表5中，全局粒度选择的平均准确率为84.25%，层粒度选择的平均准确率为85.05%，提升为0.80%。"
+        ]
+      }
+    ],
+    "ground_truth_answer": "0.80个百分点"
+  }
+]

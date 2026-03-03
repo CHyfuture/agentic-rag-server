@@ -30,7 +30,7 @@ def get_project_root():
     return current_dir
 
 project_root = get_project_root()
-print(f"🔍 检测到项目根目录: {project_root}")
+print(f"[INFO] 检测到项目根目录: {project_root}")
 
 # 测试与日志目录（统一放在 app/service/test 下）
 test_dir = project_root / "app" / "service" / "test"
@@ -42,9 +42,10 @@ sys.path.insert(0, str(project_root))
 # 导入RAG流程
 try:
     from app.service.test.RAG_flow import RAGFlow
-    print("✅ 成功导入 RAG_flow")
+    print("[INFO] 成功导入 RAG_flow")
 except ImportError as e:
-    print(f"❌ 导入RAG_flow失败: {e}")
+    # 避免在默认 GBK 控制台下因 emoji 导致编码错误
+    print(f"[ERROR] 导入RAG_flow失败: {e}")
     sys.exit(1)
 
 # 配置日志（写入 test 目录）
@@ -62,6 +63,8 @@ class CorrectedRAGEvaluator:
     """修正版RAG评估器"""
 
     def __init__(self):
+        # 注意：本评估器仅在离线评测阶段使用 QA.json 中的标准答案和标准 chunk，
+        # 这些数据不会作为检索语料或提示内容传入 RAGFlow，只用于计算评估指标。
         self.rag_flow = RAGFlow()
 
         # 构建正确的测试数据路径（使用 QA.json）
@@ -297,7 +300,8 @@ class CorrectedRAGEvaluator:
         for gt_idx, gt in enumerate(gt_chunks):
             gt_text = gt["text"]
             for r_idx, r in enumerate(retrieved_chunks):
-                retrieved_text = str(r.get("content_preview", ""))
+                # 评估阶段优先使用完整chunk文本；若不存在则回退到预览文本
+                retrieved_text = str(r.get("content_full") or r.get("content_preview", ""))
                 judge_result = self._judge_chunk_match_with_llm(gt_text, retrieved_text)
                 is_hit = judge_result["is_hit"]
                 detail = {

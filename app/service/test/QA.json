@@ -123,25 +123,25 @@
   },
   {
     "sample_id": "008",
-    "query": "在MSD肝脏肿瘤数据集上，同时使用像素级和特征级残差学习的DiffuGTS相比仅使用像素级残差图的变体，DSC指标提升了多少个百分点？",
+    "query": "DAM4SAM中，干扰物解析记忆（DRM）的更新需要同时满足哪两个条件？",
     "query_type": "多跳推理型",
     "level": "中等",
     "domain": "CS",
     "relevant_documents": [
       {
         "doc_id": "",
-        "doc_title": "Advancing Generalizable Tumor Segmentation with Anomaly-Aware Open-Vocabulary Attention Maps and Frozen Foundation Diffusion Models (基于异常感知开放词汇注意力图与冻结基础扩散模型推进泛化性肿瘤分割)",
+        "doc_title": "A Distractor-Aware Memory for Visual Object Tracking with SAM2 (一种用于视觉目标跟踪的基于SAM2的干扰物感知记忆模型)",
         "relevant_chunks": [
-          "表6中，DiffuGTS (P_r)的DSC为61.85%。",
-          "表6中，DiffuGTS (P_r + F_r)的DSC为63.23%。"
+          "第3.2.2节：“我们提出了一种简单的锚帧检测机制，该机制基于确定输出掩码与替代掩码之间的假设差异。为输出掩码以及输出掩码与替代掩码中最大连通分量的并集分别拟合一个边界框。如果两个边界框的面积之比降至 θ_anc = 0.7 以下，则当前帧被视为更新 DRM 的潜在候选帧。”",
+          "第3.2.2节：“我们仅在足够稳定的跟踪期间触发 DRM 更新，即，如果 SAM2 的预测 IoU 分数超过阈值 θ_IoU = 0.8，并且掩码面积在过去 N_M = 10 帧的中值面积的 θ_area = 0.2 范围内。”"
         ]
       }
     ],
-    "ground_truth_answer": "1.38个百分点"
+    "ground_truth_answer": "检测到干扰物（输出掩码与替代掩码的边界框面积比低于0.7）且跟踪足够稳定（预测IoU分数超过0.8且掩码面积稳定）。"
   },
   {
     "sample_id": "009",
-    "query": "在CLIP-AST的消融实验中，层粒度选择相比全局粒度选择在11个数据集上的平均准确率提升了多少？",
+    "query": "在CLIP-AST中，Transformer微调阶段的作用是什么？该阶段需要训练多少个epoch？",
     "query_type": "多跳推理型",
     "level": "中等",
     "domain": "CS",
@@ -150,10 +150,11 @@
         "doc_id": "",
         "doc_title": "Adaptive Parameter Selection for Tuning Vision-Language Models (视觉语言模型调优的自适应参数选择)",
         "relevant_chunks": [
-          "表5中，全局粒度选择的平均准确率为84.25%，层粒度选择的平均准确率为85.05%，提升为0.80%。"
+          "第3.1节：“为了评估预训练 CLIP 模型中 Transformer 层所有参数的重要性，如图 2 (a) 所示，我们首先对 CLIP 的 Transformer 模块进行微调。”",
+          "第4.3节：“对于Transformer微调阶段，我们训练1个轮次，其他设置与自适应选择性微调阶段相同。”"
         ]
       }
     ],
-    "ground_truth_answer": "0.80个百分点"
+    "ground_truth_answer": "作用是评估参数的重要性（获取重要性分数），需要训练1个epoch。"
   }
 ]

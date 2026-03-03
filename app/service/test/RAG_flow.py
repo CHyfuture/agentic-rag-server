@@ -338,7 +338,7 @@ class RAGFlow:
             logger.info(f"合并后去重结果数: {len(all_results)}")
             _print_info(f"\n合并后去重结果数: {len(all_results)}")
 
-            # 记录合并后的结果（只保留必要信息，避免日志过大）
+            # 记录合并后的结果（保留预览和完整内容，便于后续评估）
             for idx, result in enumerate(all_results):
                 info = self._extract_doc_info_from_result(result)
                 retrieval_record["merged_results"].append(
@@ -347,6 +347,7 @@ class RAGFlow:
                         "chunk_id": getattr(result, "chunk_id", None),
                         "score": getattr(result, "score", None),
                         "content_preview": getattr(result, "content", "")[:400] if hasattr(result, "content") else "",
+                        "content_full": getattr(result, "content", "") if hasattr(result, "content") else "",
                         "doc_id": info["doc_id"],
                         "doc_title": info["doc_title"],
                     }

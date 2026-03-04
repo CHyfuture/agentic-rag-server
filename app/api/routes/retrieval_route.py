@@ -59,6 +59,9 @@ async def semantic_search(req: SemanticSearchRequest):
             keyword_text=req.keyword_text,
             author=req.author,
             paper_title=req.paper_title,
+            doc_id=req.doc_id,
+            kb_id=req.kb_id,
+            security_level=req.security_level,
         )
         result_dicts = []
         for r in results:
@@ -84,6 +87,9 @@ async def keyword_search(req: KeywordSearchRequest):
             keyword_text=req.keyword_text,
             author=req.author,
             paper_title=req.paper_title,
+            doc_id=req.doc_id,
+            kb_id=req.kb_id,
+            security_level=req.security_level,
         )
         result_dicts = []
         for r in results:
@@ -112,6 +118,9 @@ async def hybrid_search(req: HybridSearchRequest):
             keyword_text=req.keyword_text,
             author=req.author,
             paper_title=req.paper_title,
+            doc_id=req.doc_id,
+            kb_id=req.kb_id,
+            security_level=req.security_level,
         )
         result_dicts = []
         for r in results:
@@ -138,6 +147,9 @@ async def fulltext_search(req: FulltextSearchRequest):
             keyword_text=req.keyword_text,
             author=req.author,
             paper_title=req.paper_title,
+            doc_id=req.doc_id,
+            kb_id=req.kb_id,
+            security_level=req.security_level,
         )
         result_dicts = []
         for r in results:
@@ -164,6 +176,9 @@ async def text_match_search(req: TextMatchSearchRequest):
             keyword_text=req.keyword_text,
             author=req.author,
             paper_title=req.paper_title,
+            doc_id=req.doc_id,
+            kb_id=req.kb_id,
+            security_level=req.security_level,
         )
         result_dicts = []
         for r in results:
@@ -190,6 +205,9 @@ async def phrase_match_search(req: PhraseMatchSearchRequest):
             keyword_text=req.keyword_text,
             author=req.author,
             paper_title=req.paper_title,
+            doc_id=req.doc_id,
+            kb_id=req.kb_id,
+            security_level=req.security_level,
         )
         result_dicts = []
         for r in results:

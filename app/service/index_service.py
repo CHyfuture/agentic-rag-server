@@ -263,7 +263,6 @@ def ensure_parent_child_collection(
                         f"与当前模型维度 {dim} 不一致。请删除该集合后重新运行，或设置正确的 EMBEDDING_DIM。"
                     )
                 break
-        _create_vector_indexes_if_needed(collection_name)
         return
 
     # 定义所有字段（包括主键、主向量、多向量和元数据）
@@ -289,30 +288,6 @@ def ensure_parent_child_collection(
             description="对 content 编码的主向量",
         )
     )
-    fields.append(
-        FieldSchema(
-            name="vector_abstract",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=dim,
-            description="对 abstract_text 编码的向量",
-        )
-    )
-    fields.append(
-        FieldSchema(
-            name="vector_keywords",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=dim,
-            description="对 keywords_text 编码的向量",
-        )
-    )
-    fields.append(
-        FieldSchema(
-            name="vector_summary",
-            dtype=DataType.FLOAT_VECTOR,
-            dim=dim,
-            description="对 summary_text 编码的向量",
-        )
-    )
 
     # 文档标识与父子结构字段
     fields.extend(
@@ -331,6 +306,11 @@ def ensure_parent_child_collection(
                 name="security_level",
                 dtype=DataType.INT64,
                 description="文件访问级别",
+            ),
+            FieldSchema(
+                name="owner_id",
+                dtype=DataType.INT64,
+                description="所有者 ID",
             ),
             FieldSchema(
                 name="chunk_index",
@@ -454,26 +434,6 @@ def ensure_parent_child_collection(
 
     StorageService.create_collection(req)
 
-    # 为其他向量字段创建索引
-    _create_vector_indexes_if_needed(collection_name)
-
-
-def _create_vector_indexes_if_needed(collection_name: str) -> None:
-    """为除主向量外的多向量字段创建索引（如未创建）。"""
-    coll = Collection(collection_name)
-    existing_idx_fields = {idx.field_name for idx in coll.indexes}
-
-    index_params = {
-        "metric_type": "IP",
-        "index_type": "HNSW",
-        "params": {"M": 16, "efConstruction": 200},
-    }
-
-    for vec_field in ("vector_abstract", "vector_keywords", "vector_summary"):
-        if vec_field in [f.name for f in coll.schema.fields]:
-            if vec_field not in existing_idx_fields:
-                coll.create_index(field_name=vec_field, index_params=index_params)
-
 
 # ===========================
 # JSON 处理与入库
@@ -590,6 +550,7 @@ def _build_records_and_chunks(
     dim: int,
     tenant_id: int = 1,
     security_level: int = 1,
+    owner_id: int = 1,
 ) -> Tuple[List[Dict[str, Any]], List[DocumentChunkModel]]:
     """从 JSON 数据构建 Milvus 记录与 DocumentChunkModel."""
     meta = _extract_paper_metadata(data)
@@ -605,28 +566,6 @@ def _build_records_and_chunks(
         return [], []
 
     keywords_text = "；".join(keywords_list)
-
-    # 批量编码 meta 文本，避免 3 次单独 encode 调用
-    meta_texts = [t for t in (abstract_text, keywords_text, summary_text) if t]
-    if meta_texts:
-        meta_vecs = model.encode(
-            meta_texts,
-            task="retrieval",
-            show_progress_bar=False,
-            batch_size=min(32, len(meta_texts)),
-        )
-        idx = 0
-        vec_abstract = meta_vecs[idx].tolist() if abstract_text else _zero_vector(dim)
-        if abstract_text:
-            idx += 1
-        vec_keywords = meta_vecs[idx].tolist() if keywords_text else _zero_vector(dim)
-        if keywords_text:
-            idx += 1
-        vec_summary = meta_vecs[idx].tolist() if summary_text else _zero_vector(dim)
-    else:
-        vec_abstract = _zero_vector(dim)
-        vec_keywords = _zero_vector(dim)
-        vec_summary = _zero_vector(dim)
 
     chunk_req = ChunkRequest(
         text=original_text,
@@ -712,6 +651,7 @@ def _build_records_and_chunks(
             "doc_id": doc_id,
             "kb_id": kb_id,
             "security_level": security_level,
+            "owner_id": owner_id,
             "chunk_index": chunk_index,
             "chunk_type": chunk_type,
             "position_start": start_index,
@@ -728,9 +668,6 @@ def _build_records_and_chunks(
             "institutions": institutions_str,
             "tags": "",
             "vector_content": vec_content,
-            "vector_abstract": vec_abstract,
-            "vector_keywords": vec_keywords,
-            "vector_summary": vec_summary,
         }
         records.append(record)
 
@@ -876,6 +813,7 @@ async def build_index_from_json_contents(
             dim=vector_dim,
             tenant_id=tenant_id,
             security_level=security_level,
+            owner_id=owner_id,
         )
 
         if not records:
@@ -909,5 +847,202 @@ async def build_index_from_json_contents(
         "total_chunks": total_chunks,
         "milvus_records": milvus_records,
         "skipped_files": skipped_files,
+    }
+
+
+async def insert_single_paper_data(
+    kb_id: int,
+    doc_id: int,
+    data: Dict[str, Any],
+    *,
+    tenant_id: int = 1,
+    security_level: int = 1,
+    owner_id: int = 1,
+    filename: str = "paper.json",
+    skip_base_db: bool = False,
+    collection_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """将单条论文数据插入 Milvus（含切片、向量化、可选 BaseDB 切片写入）。
+
+    仅保留 chunk 信息的保存和处理逻辑，不保存 DocumentModel。
+    doc_id、tenant_id、security_level 等 chunk 保存所需参数均由请求传入。
+
+    入参:
+        kb_id: 知识库 ID
+        doc_id: 文档 ID（由调用方提供，不创建文档）
+        data: 论文 JSON 对象，需包含 original_text 及 title、authors、abstract、keywords、conclusion 等
+        tenant_id: 租户 ID，默认 1
+        security_level: 密级，默认 1
+        owner_id: 所有者 ID，默认 1
+        filename: 源文件名，用于记录标识，默认 "paper.json"
+        skip_base_db: 是否跳过 BaseDB 切片写入，True 时仅写入 Milvus
+        collection_name: 集合名称，默认从环境变量读取
+
+    返回:
+        {
+            "doc_id": int,
+            "chunk_count": int,
+            "milvus_ids": List[int],
+            "success": bool,
+            "error": str | None,  # 失败时
+        }
+    """
+    _load_milvus_env()
+    if not skip_base_db:
+        _load_db_env()
+
+    collection = collection_name or _get_default_collection_name()
+    model = _get_embedding_model()
+    env_dim = os.getenv("EMBEDDING_DIM")
+    vector_dim = int(env_dim) if env_dim else model.get_sentence_embedding_dimension()
+    ensure_parent_child_collection(collection, vector_dim)
+
+    meta = _extract_paper_metadata(data)
+    original_text: str = meta["original_text"]
+    if not original_text:
+        return {"success": False, "error": "original_text 为空", "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+
+    records, chunk_models = _build_records_and_chunks(
+        data=data,
+        kb_id=kb_id,
+        doc_id=doc_id,
+        model=model,
+        dim=vector_dim,
+        tenant_id=tenant_id,
+        security_level=security_level,
+        owner_id=owner_id,
+    )
+
+    if not records:
+        return {"success": False, "error": "切片结果为空", "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+
+    if not skip_base_db:
+        chunk_client = _get_chunk_client()
+        try:
+            created = await chunk_client.create_document_chunk_batch(chunk_models)
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+        chunk_ids = _extract_chunk_ids_from_batch_response(created, records)
+        if not chunk_ids:
+            return {"success": False, "error": "无法获取 chunk_id", "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+        for rec, cid in zip(records, chunk_ids):
+            rec["id"] = cid
+
+    insert_req = InsertRequest(collection_name=collection, records=records)
+    ids = StorageService.insert(insert_req)
+
+    return {
+        "success": True,
+        "doc_id": doc_id,
+        "chunk_count": len(records),
+        "milvus_ids": [int(x) for x in ids] if ids else [],
+    }
+
+
+async def delete_document_by_doc_id(
+    doc_id: int,
+    *,
+    collection_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """按 doc_id 删除文档：同步删除 Milvus 向量与 BaseDB chunk 数据。"""
+    _load_milvus_env()
+    _load_db_env()
+
+    collection = collection_name or _get_default_collection_name()
+
+    # 1. 删除 Milvus 中该 doc_id 的向量记录
+    _connect_milvus()
+    coll = Collection(collection, using="default")
+    coll.delete(f"doc_id == {doc_id}")
+    coll.flush()
+
+    # 2. 删除 BaseDB 中该 doc_id 的 chunk
+    chunk_client = _get_chunk_client()
+    try:
+        await chunk_client.remove_document_chunks_by_doc_id(doc_id=doc_id)
+    except Exception as exc:
+        return {"success": False, "doc_id": doc_id, "error": f"删除 BaseDB 切片失败: {exc}"}
+
+    return {"success": True, "doc_id": doc_id}
+
+
+async def update_single_paper_data(
+    kb_id: int,
+    doc_id: int,
+    data: Dict[str, Any],
+    *,
+    tenant_id: int = 1,
+    security_level: int = 1,
+    owner_id: int = 1,
+    filename: str = "paper.json",
+    skip_base_db: bool = False,
+    collection_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """更新单条论文数据：同步删除 Milvus 与 BaseDB 中该 doc_id 的旧记录，再按 insert 逻辑重新切片、向量化、入库。
+
+    更新操作始终同步 BaseDB：删除旧 chunk 并重新新增，与 Milvus 保持一致。
+    """
+    _load_milvus_env()
+    _load_db_env()
+
+    collection = collection_name or _get_default_collection_name()
+    model = _get_embedding_model()
+    env_dim = os.getenv("EMBEDDING_DIM")
+    vector_dim = int(env_dim) if env_dim else model.get_sentence_embedding_dimension()
+    ensure_parent_child_collection(collection, vector_dim)
+
+    meta = _extract_paper_metadata(data)
+    original_text: str = meta["original_text"]
+    if not original_text:
+        return {"success": False, "error": "original_text 为空", "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+
+    # 1. 删除 Milvus 中该 doc_id 的旧记录
+    _connect_milvus()
+    coll = Collection(collection, using="default")
+    coll.delete(f"doc_id == {doc_id}")
+    coll.flush()
+
+    # 2. 同步删除 BaseDB 中该 doc_id 的旧 chunk
+    chunk_client = _get_chunk_client()
+    try:
+        await chunk_client.remove_document_chunks_by_doc_id(doc_id=doc_id)
+    except Exception as exc:
+        return {"success": False, "error": f"删除 BaseDB 切片失败: {exc}", "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+
+    # 3. 构建新记录（与 insert 相同逻辑）
+    records, chunk_models = _build_records_and_chunks(
+        data=data,
+        kb_id=kb_id,
+        doc_id=doc_id,
+        model=model,
+        dim=vector_dim,
+        tenant_id=tenant_id,
+        security_level=security_level,
+        owner_id=owner_id,
+    )
+
+    if not records:
+        return {"success": False, "error": "切片结果为空", "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+
+    # 4. 同步重新新增 BaseDB chunk
+    try:
+        created = await chunk_client.create_document_chunk_batch(chunk_models)
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+    chunk_ids = _extract_chunk_ids_from_batch_response(created, records)
+    if not chunk_ids:
+        return {"success": False, "error": "无法获取 chunk_id", "doc_id": doc_id, "chunk_count": 0, "milvus_ids": []}
+    for rec, cid in zip(records, chunk_ids):
+        rec["id"] = cid
+
+    # 5. 插入 Milvus
+    insert_req = InsertRequest(collection_name=collection, records=records)
+    ids = StorageService.insert(insert_req)
+
+    return {
+        "success": True,
+        "doc_id": doc_id,
+        "chunk_count": len(records),
+        "milvus_ids": [int(x) for x in ids] if ids else [],
     }
 

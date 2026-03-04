@@ -4,7 +4,7 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from base_db import DocumentClient, DocumentChunkClient
 from base_db.abstract.abstract_base_core import AbstractBaseCore
@@ -185,12 +185,34 @@ def _escape_like_value(v: str) -> str:
     return str(v).replace("'", "''")
 
 
+def _int_list_to_ids(val: Union[int, List[int], None]) -> None | list[int]:
+    """将单值或数组规范化为整数列表，过滤非法值。"""
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return [val] if val >= 0 else None
+    if isinstance(val, (list, tuple)):
+        ids = [int(x) for x in val if isinstance(x, (int, float)) and int(x) == x and int(x) >= 0]
+        return ids if ids else None
+    return None
+
+
+def _ids_to_milvus_expr(field: str, ids: list[int]) -> str:
+    """将 doc_id/kb_id/security_level 的 ID 列表转为 Milvus 表达式。"""
+    if len(ids) == 1:
+        return f"{field} == {ids[0]}"
+    return f"{field} in [{', '.join(str(x) for x in ids)}]"
+
+
 def _build_metadata_filter(
     keyword_text: str | None = None,
     author: str | None = None,
     paper_title: str | None = None,
-) -> str:
-    """将 keyword_text、author、paper_title 组装为 Milvus 过滤表达式。"""
+    doc_id: Union[int, List[int], None] = None,
+    kb_id: Union[int, List[int], None] = None,
+    security_level: Union[int, List[int], None] = None,
+) -> str | None:
+    """将 keyword_text、author、paper_title、doc_id、kb_id、security_level 组装为 Milvus 过滤表达式。"""
     conditions: list[str] = []
     if keyword_text and str(keyword_text).strip():
         v = _escape_like_value(keyword_text.strip())
@@ -201,6 +223,15 @@ def _build_metadata_filter(
     if paper_title and str(paper_title).strip():
         v = _escape_like_value(paper_title.strip())
         conditions.append(f'title like "%{v}%"')
+    doc_ids = _int_list_to_ids(doc_id)
+    if doc_ids is not None:
+        conditions.append(_ids_to_milvus_expr("doc_id", doc_ids))
+    kb_ids = _int_list_to_ids(kb_id)
+    if kb_ids is not None:
+        conditions.append(_ids_to_milvus_expr("kb_id", kb_ids))
+    sec_levels = _int_list_to_ids(security_level)
+    if sec_levels is not None:
+        conditions.append(_ids_to_milvus_expr("security_level", sec_levels))
     return " and ".join(conditions) if conditions else None
 
 
@@ -212,6 +243,9 @@ def semantic_search(
     keyword_text: str | None = None,
     author: str | None = None,
     paper_title: str | None = None,
+    doc_id: Union[int, List[int], None] = None,
+    kb_id: Union[int, List[int], None] = None,
+    security_level: Union[int, List[int], None] = None,
     **kwargs: Any,
 ):
     """语义检索，Query 由本地嵌入模型自动转为向量，集合名称从 .env 获取。"""
@@ -228,7 +262,14 @@ def semantic_search(
         req_kwargs["rerank_enabled"] = rerank_enabled
     if similarity_threshold is not None:
         req_kwargs["similarity_threshold"] = similarity_threshold
-    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    metadata_filter = _build_metadata_filter(
+        keyword_text=keyword_text,
+        author=author,
+        paper_title=paper_title,
+        doc_id=doc_id,
+        kb_id=kb_id,
+        security_level=security_level,
+    )
     if metadata_filter is not None:
         req_kwargs["milvus_expr"] = metadata_filter
 
@@ -243,6 +284,9 @@ def keyword_search(
     keyword_text: str | None = None,
     author: str | None = None,
     paper_title: str | None = None,
+    doc_id: Union[int, List[int], None] = None,
+    kb_id: Union[int, List[int], None] = None,
+    security_level: Union[int, List[int], None] = None,
     **kwargs: Any,
 ):
     """关键词检索，集合名称从 .env 获取。"""
@@ -253,7 +297,14 @@ def keyword_search(
     }
     if top_k is not None:
         req_kwargs["top_k"] = top_k
-    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    metadata_filter = _build_metadata_filter(
+        keyword_text=keyword_text,
+        author=author,
+        paper_title=paper_title,
+        doc_id=doc_id,
+        kb_id=kb_id,
+        security_level=security_level,
+    )
     if metadata_filter is not None:
         req_kwargs["milvus_expr"] = metadata_filter
     extra = _build_extra_params(min_match_count=min_match_count)
@@ -274,6 +325,9 @@ def hybrid_search(
     keyword_text: str | None = None,
     author: str | None = None,
     paper_title: str | None = None,
+    doc_id: Union[int, List[int], None] = None,
+    kb_id: Union[int, List[int], None] = None,
+    security_level: Union[int, List[int], None] = None,
     **kwargs: Any,
 ):
     """混合检索（语义 + 关键词），Query 由本地嵌入模型自动转为向量，集合名称从 .env 获取，支持重排和阈值过滤。"""
@@ -290,7 +344,14 @@ def hybrid_search(
         req_kwargs["rerank_enabled"] = rerank_enabled
     if similarity_threshold is not None:
         req_kwargs["similarity_threshold"] = similarity_threshold
-    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    metadata_filter = _build_metadata_filter(
+        keyword_text=keyword_text,
+        author=author,
+        paper_title=paper_title,
+        doc_id=doc_id,
+        kb_id=kb_id,
+        security_level=security_level,
+    )
     if metadata_filter is not None:
         req_kwargs["milvus_expr"] = metadata_filter
     extra = _build_extra_params(semantic_weight=semantic_weight, keyword_weight=keyword_weight)
@@ -309,6 +370,9 @@ def fulltext_search(
     keyword_text: str | None = None,
     author: str | None = None,
     paper_title: str | None = None,
+    doc_id: Union[int, List[int], None] = None,
+    kb_id: Union[int, List[int], None] = None,
+    security_level: Union[int, List[int], None] = None,
     **kwargs: Any,
 ):
     """全文检索，集合名称从 .env 获取。"""
@@ -319,7 +383,14 @@ def fulltext_search(
     }
     if top_k is not None:
         req_kwargs["top_k"] = top_k
-    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    metadata_filter = _build_metadata_filter(
+        keyword_text=keyword_text,
+        author=author,
+        paper_title=paper_title,
+        doc_id=doc_id,
+        kb_id=kb_id,
+        security_level=security_level,
+    )
     if metadata_filter is not None:
         req_kwargs["milvus_expr"] = metadata_filter
     extra = _build_extra_params(min_match_count=min_match_count, match_mode=match_mode)
@@ -338,6 +409,9 @@ def text_match_search(
     paper_title: str | None = None,
     match_type: str | None = None,
     case_sensitive: bool | None = None,
+    doc_id: Union[int, List[int], None] = None,
+    kb_id: Union[int, List[int], None] = None,
+    security_level: Union[int, List[int], None] = None,
     **kwargs: Any,
 ):
     """文本匹配检索，集合名称从 .env 获取。"""
@@ -348,7 +422,14 @@ def text_match_search(
     }
     if top_k is not None:
         req_kwargs["top_k"] = top_k
-    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    metadata_filter = _build_metadata_filter(
+        keyword_text=keyword_text,
+        author=author,
+        paper_title=paper_title,
+        doc_id=doc_id,
+        kb_id=kb_id,
+        security_level=security_level,
+    )
     if metadata_filter is not None:
         req_kwargs["milvus_expr"] = metadata_filter
     extra = _build_extra_params(match_type=match_type, case_sensitive=case_sensitive)
@@ -367,6 +448,9 @@ def phrase_match_search(
     paper_title: str | None = None,
     case_sensitive: bool | None = None,
     allow_partial: bool | None = None,
+    doc_id: Union[int, List[int], None] = None,
+    kb_id: Union[int, List[int], None] = None,
+    security_level: Union[int, List[int], None] = None,
     **kwargs: Any,
 ):
     """短语匹配检索，集合名称从 .env 获取。"""
@@ -377,7 +461,14 @@ def phrase_match_search(
     }
     if top_k is not None:
         req_kwargs["top_k"] = top_k
-    metadata_filter = _build_metadata_filter(keyword_text=keyword_text, author=author, paper_title=paper_title)
+    metadata_filter = _build_metadata_filter(
+        keyword_text=keyword_text,
+        author=author,
+        paper_title=paper_title,
+        doc_id=doc_id,
+        kb_id=kb_id,
+        security_level=security_level,
+    )
     if metadata_filter is not None:
         req_kwargs["milvus_expr"] = metadata_filter
     extra = _build_extra_params(case_sensitive=case_sensitive, allow_partial=allow_partial)

@@ -1,7 +1,7 @@
 
 from fastapi import APIRouter
 import logging
-from app.service.test.RAG_flow import DeepSeekClient, RAGFlow
+from app.service.rag.RAG_flow import DeepSeekClient, RAGFlow
 from app.service import retrieval_service
 from app.api.schemas.retrieval import (
     QaRequest,

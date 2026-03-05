@@ -35,7 +35,7 @@ docker rm agentic-rag-new-server 2>/dev/null || true
 
 # 启动新容器
 echo "正在启动容器: agentic-rag-new-server:$VERSION"
-docker run -d  --env-file .env.example --name agentic-rag-new-server -p 5010:5010 -v /home/general/agentic-rag-server/workspace:/app/workspace  -e RERANK_MODEL_NAME=workspace/jina-reranker-v3  agentic-rag-new-server:$VERSION
+docker run -d  --env-file .env.example --name agentic-rag-new-server -p 5010:5010 -v home/chyfuture/CHyfuture/workspace:/app/workspace  -e RERANK_MODEL_NAME=workspace/jina-reranker-v3  agentic-rag-new-server:$VERSION
 
 if [ $? -eq 0 ]; then
   echo "容器启动成功！"

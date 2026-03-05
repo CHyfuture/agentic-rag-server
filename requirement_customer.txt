@@ -1,0 +1,2 @@
+milvus-service @ git+ssh://git@github.com/CHyfuture/BaseVector-Core.git
+base-db @ git+ssh://git@github.com/CHyfuture/BaseDB-Core-Pypi.git

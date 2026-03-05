@@ -28,6 +28,9 @@ ENV HOST=0.0.0.0 \
     COLLECTION_NAME=icau_papers_collection     \
     EMBEDDING_MODEL=workspace/jina-embeddings-v5-text-small
 
+ARG REFRESH_DATE=1
+RUN pip install --no-cache-dir -r requirement_customer.txt
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

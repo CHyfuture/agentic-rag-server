@@ -291,11 +291,14 @@ class CorrectedRAGEvaluator:
                 "chunk级对齐详情": [],
                 "命中标准chunk数量": 0,
                 "标准chunk总数": gt_total,
+                "Hit@K": 0.0,
+                "MRR": 0.0,
             }
 
         align_details: List[Dict[str, Any]] = []
         hit_gt_indices = set()
         hit_retrieved_indices = set()
+        hit_ranks = []
 
         for gt_idx, gt in enumerate(gt_chunks):
             gt_text = gt["text"]
@@ -320,6 +323,7 @@ class CorrectedRAGEvaluator:
                 if is_hit:
                     hit_gt_indices.add(gt_idx)
                     hit_retrieved_indices.add(r_idx)
+                    hit_ranks.append(r_idx + 1)
                     # 对于每个标准chunk，一旦找到一个命中即可停止继续判断，避免额外开销
                     break
 
@@ -334,6 +338,16 @@ class CorrectedRAGEvaluator:
         else:
             f1 = 0.0
 
+        # Hit@K 与 MRR（以参与评估的检索条数 K 为上界）
+        if hit_ranks:
+            hit_at_k = 1.0
+            first_hit_rank = min(hit_ranks)
+            mrr = 1.0 / first_hit_rank
+        else:
+            hit_at_k = 0.0
+            first_hit_rank = 0
+            mrr = 0.0
+
         return {
             "chunk召回率": round(recall, 3),
             "chunk精确率": round(precision, 3),
@@ -341,116 +355,229 @@ class CorrectedRAGEvaluator:
             "chunk级对齐详情": align_details,
             "命中标准chunk数量": hit_gt_count,
             "标准chunk总数": gt_total,
+            "Hit@K": round(hit_at_k, 3),
+            "MRR": round(mrr, 3),
+            "首命中rank": first_hit_rank,
         }
 
     def calculate_evaluation_metrics(self, case: Dict, response: str, exec_time: float, trace: Dict) -> Dict:
-        """计算完整的评估指标（包含chunk级检索指标，字段名使用中文）"""
-        ground_truth = str(case['ground_truth_answer']).lower().strip()
-        rag_answer = str(response).lower().strip()
+        """计算完整的评估指标（对齐图片中的指标体系）"""
+        ground_truth_raw = str(case['ground_truth_answer'])
+        response_raw = str(response)
+        ground_truth = ground_truth_raw.lower().strip()
+        rag_answer = response_raw.lower().strip()
 
-        # 1. 基础准确率检查（布尔）
+        # 1. 基础准确率与 EM
         auto_correct = self.check_accuracy(ground_truth, rag_answer)
+        em_score = self._compute_em(ground_truth_raw, response_raw)
 
-        # 2. chunk 级检索指标
+        # 2. chunk 级检索指标（召回率 / 精确率 / F1 / Hit@K / MRR）
         gt_chunks = self._build_gt_chunks(case)
         retrieved_chunks = self._build_retrieved_chunks_from_trace(trace, top_k=10)
         chunk_metrics = self._calculate_chunk_level_metrics(gt_chunks, retrieved_chunks)
-        chunk_recall = chunk_metrics.get("chunk召回率", 0.0)
-        chunk_f1 = chunk_metrics.get("chunkF1", 0.0)
-        hit_gt_count = chunk_metrics.get("命中标准chunk数量", 0)
-        gt_total = chunk_metrics.get("标准chunk总数", len(gt_chunks))
-        hit_ratio = hit_gt_count / max(1, gt_total or 1)
 
-        # 3. 答案完整性：文本覆盖度 + chunk召回率
-        text_completeness = self.assess_completeness(case['query'], ground_truth, rag_answer)
-        completeness = 0.6 * float(chunk_recall) + 0.4 * float(text_completeness)
-
-        # 4. 事实一致性：数值一致性 + 证据一致性
-        # 4.1 数值一致性 Sn
-        Sn = self.check_consistency(ground_truth, rag_answer)
-
-        # 4.2 证据一致性 Se，基于命中chunk内部的数值比对
-        import re
-
-        align_details = chunk_metrics.get("chunk级对齐详情", [])
-        evidence_scores: List[float] = []
-        for d in align_details:
-            if not d.get("是否命中"):
-                continue
-            std_text = str(d.get("标准chunk文本", ""))
-            ret_text = str(d.get("检索chunk预览", ""))
-            std_nums = re.findall(r'\d+\.?\d*', std_text)
-            ret_nums = re.findall(r'\d+\.?\d*', ret_text)
-            if not std_nums:
-                # 无数值，视为无冲突
-                evidence_scores.append(1.0)
-                continue
-            if not ret_nums:
-                # 标准有数值但检索chunk没有
-                evidence_scores.append(0.0)
-                continue
-            # 检查每个标准数值在检索chunk中是否有相近值
-            matched_all = True
-            matched_any = False
-            for t in std_nums:
-                t_val = float(t)
-                local_match = False
-                for r in ret_nums:
-                    r_val = float(r)
-                    if max(t_val, r_val) == 0:
-                        if t_val == r_val:
-                            local_match = True
-                            break
-                    else:
-                        if abs(t_val - r_val) / max(t_val, r_val) <= 0.2:
-                            local_match = True
-                            break
-                if local_match:
-                    matched_any = True
-                else:
-                    matched_all = False
-            if matched_all:
-                evidence_scores.append(1.0)
-            elif matched_any:
-                evidence_scores.append(0.5)
-            else:
-                evidence_scores.append(0.0)
-
-        if evidence_scores:
-            Se = sum(evidence_scores) / len(evidence_scores)
-        else:
-            # 无命中chunk时视为中性
-            Se = 0.5
-
-        consistency = 0.5 * float(Sn) + 0.5 * float(Se)
-
-        # 5. 推理能力：结合问题类型、证据充分性与答案质量
+        # 3. 多跳推理得分 MultiHopScore（仅对“多跳推理型”计算）
         qtype = case.get('query_type', '')
-        if qtype == '多跳推理型':
-            w_d = 1.0
-        elif qtype == '方法/实验型':
-            w_d = 0.8
-        else:
-            w_d = 0.6
+        align_details = chunk_metrics.get("chunk级对齐详情", [])
+        # 统计有效证据 chunk：命中的标准 chunk 数量
+        effective_evidence_count = chunk_metrics.get("命中标准chunk数量", 0)
+        multihop_score = 0.0
+        multihop_R = 0.0
+        multihop_E = 0.0
+        multihop_A = 0.0
+        if qtype == "多跳推理型" and effective_evidence_count >= 2:
+            evidence_texts = []
+            for d in align_details:
+                if d.get("是否命中"):
+                    std_text = str(d.get("标准chunk文本", ""))
+                    ret_text = str(d.get("检索chunk预览", ""))
+                    evidence_texts.append(
+                        f"[标准chunk] {std_text}\n[检索chunk] {ret_text}"
+                    )
+            scores = self._llm_score_multihop(
+                case, response_raw, "\n\n".join(evidence_texts)
+            )
+            multihop_R = scores.get("R", 0.0)
+            multihop_E = scores.get("E", 0.0)
+            multihop_A = scores.get("A", 0.0)
+            multihop_score = 0.3 * multihop_R + 0.3 * multihop_E + 0.4 * multihop_A
 
-        # 证据充分性因子 E
-        E = 0.5 * float(chunk_f1) + 0.5 * float(hit_ratio)
+        # 4. 多论文推理得分 MultiDocScore（仅对“多论文推理型”计算）
+        multidoc_score = 0.0
+        multidoc_R = 0.0
+        multidoc_E = 0.0
+        multidoc_A = 0.0
+        if qtype == "多论文推理型":
+            used_doc_ids = set()
+            for d in align_details:
+                if d.get("是否命中"):
+                    doc_id = d.get("doc_id") or d.get("检索chunk_doc_id")
+                    if doc_id is not None:
+                        used_doc_ids.add(str(doc_id))
+            if len(used_doc_ids) >= 2:
+                # 基于命中文档构造证据摘要
+                doc_to_snippets: Dict[str, List[str]] = {}
+                for d in align_details:
+                    if not d.get("是否命中"):
+                        continue
+                    doc_id = str(d.get("doc_id") or d.get("检索chunk_doc_id") or "")
+                    if not doc_id:
+                        continue
+                    text = str(d.get("标准chunk文本") or d.get("检索chunk预览") or "")
+                    doc_to_snippets.setdefault(doc_id, []).append(text)
+                doc_summaries = []
+                for doc_id, snippets in doc_to_snippets.items():
+                    joined = "\n".join(snippets[:3])
+                    doc_summaries.append(f"[文档 {doc_id}] 关键证据片段:\n{joined}")
+                scores = self._llm_score_multi_doc(
+                    case, response_raw, "\n\n".join(doc_summaries)
+                )
+                multidoc_R = scores.get("R", 0.0)
+                multidoc_E = scores.get("E", 0.0)
+                multidoc_A = scores.get("A", 0.0)
+                multidoc_score = 0.3 * multidoc_R + 0.3 * multidoc_E + 0.4 * multidoc_A
 
-        # 答案合理性因子 A
-        A = 0.5 * float(completeness) + 0.5 * float(consistency)
-
-        reasoning_ability = w_d * (0.6 * E + 0.4 * A)
-
-        metrics: Dict[str, Any] = {
-            '答案是否正确': auto_correct,
-            '答案完整性': completeness,
-            '事实一致性': consistency,
-            '推理能力': reasoning_ability,
-            '耗时': exec_time,
-        }
-        # 合并 chunk 级指标
+        metrics: Dict[str, Any] = {}
         metrics.update(chunk_metrics)
+        metrics.update(
+            {
+                "答案是否正确": auto_correct,
+                "EM": em_score,
+                "MultiHopScore": round(multihop_score, 3),
+                "MultiHop_R": round(multihop_R, 3),
+                "MultiHop_E": round(multihop_E, 3),
+                "MultiHop_A": round(multihop_A, 3),
+                "MultiDocScore": round(multidoc_score, 3),
+                "MultiDoc_R": round(multidoc_R, 3),
+                "MultiDoc_E": round(multidoc_E, 3),
+                "MultiDoc_A": round(multidoc_A, 3),
+                "耗时": exec_time,
+            }
+        )
         return metrics
+
+    def _compute_em(self, truth: str, response: str) -> int:
+        """
+        严格的 EM（Exact Match）指标：
+        - 预处理后完全一致记为 1，否则 0。
+        """
+        def _normalize(s: str) -> str:
+            import re
+
+            s = s.strip().lower()
+            # 全角转半角的简单处理
+            s = s.replace("％", "%").replace("×", "x")
+            # 去掉常见标点和空白
+            s = re.sub(r"[，,。．\.！？!?\s]", "", s)
+            return s
+
+        if not truth or not response:
+            return 0
+        return 1 if _normalize(truth) == _normalize(response) else 0
+
+    def _llm_score_multihop(self, case: Dict, response: str, evidence: str) -> Dict[str, float]:
+        """
+        让 LLM 对多跳推理题进行 R/E/A 打分，返回形如 {\"R\":0-1, \"E\":0-1, \"A\":0-1}。
+        """
+        system_prompt = (
+            "你是一个学术多跳推理评估助手。现在需要根据问题、标准答案、系统回答以及若干证据片段，"
+            "从三个维度对系统回答进行 0~1 区间的打分：\\n"
+            "R：推理链条是否完整、逻辑是否正确；\\n"
+            "E：是否充分利用并正确整合了提供的证据；\\n"
+            "A：最终答案是否与标准答案在关键结论上一致。\\n"
+            "请只输出一个 JSON 对象，例如 {\"R\":0.8,\"E\":0.9,\"A\":1.0}。"
+        )
+        user_prompt = (
+            f"问题：{case.get('query', '')}\\n"
+            f"标准答案：{case.get('ground_truth_answer', '')}\\n"
+            f"系统回答：{response}\\n"
+            f"证据片段：\\n{evidence}\\n\\n"
+            "请给出 R/E/A 三个 0~1 的分数，并只输出 JSON："
+        )
+
+        try:
+            decision = self.rag_flow.deepseek.chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+            text = str(decision).strip()
+            import json
+
+            scores = json.loads(text)
+        except Exception as e:
+            logger.error(f"调用DeepSeek进行多跳推理评分失败: {e}")
+            return {"R": 0.0, "E": 0.0, "A": 0.0}
+
+        def _clamp(v: Any) -> float:
+            try:
+                x = float(v)
+            except Exception:
+                return 0.0
+            if x < 0.0:
+                return 0.0
+            if x > 1.0:
+                return 1.0
+            return x
+
+        return {
+            "R": _clamp(scores.get("R", 0.0)),
+            "E": _clamp(scores.get("E", 0.0)),
+            "A": _clamp(scores.get("A", 0.0)),
+        }
+
+    def _llm_score_multi_doc(self, case: Dict, response: str, evidence_by_doc: str) -> Dict[str, float]:
+        """
+        让 LLM 对多论文推理题进行 R/E/A 打分，返回形如 {\"R\":0-1, \"E\":0-1, \"A\":0-1}。
+        """
+        system_prompt = (
+            "你是一个多论文推理评估助手。现在给出问题、标准答案、系统回答，以及按文档聚合的证据摘要。"
+            "请从三个维度在 0~1 区间为系统回答打分：\\n"
+            "R：是否检索并利用了足够多篇相关论文；\\n"
+            "E：是否正确整合了不同论文中的证据；\\n"
+            "A：最终结论是否与标准答案以及多篇论文的证据一致。\\n"
+            "请只输出一个 JSON 对象，例如 {\"R\":0.7,\"E\":0.8,\"A\":0.9}。"
+        )
+        user_prompt = (
+            f"问题：{case.get('query', '')}\\n"
+            f"标准答案：{case.get('ground_truth_answer', '')}\\n"
+            f"系统回答：{response}\\n"
+            f"多篇论文证据摘要：\\n{evidence_by_doc}\\n\\n"
+            "请给出 R/E/A 三个 0~1 的分数，并只输出 JSON："
+        )
+
+        try:
+            decision = self.rag_flow.deepseek.chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+            text = str(decision).strip()
+            import json
+
+            scores = json.loads(text)
+        except Exception as e:
+            logger.error(f"调用DeepSeek进行多论文推理评分失败: {e}")
+            return {"R": 0.0, "E": 0.0, "A": 0.0}
+
+        def _clamp(v: Any) -> float:
+            try:
+                x = float(v)
+            except Exception:
+                return 0.0
+            if x < 0.0:
+                return 0.0
+            if x > 1.0:
+                return 1.0
+            return x
+
+        return {
+            "R": _clamp(scores.get("R", 0.0)),
+            "E": _clamp(scores.get("E", 0.0)),
+            "A": _clamp(scores.get("A", 0.0)),
+        }
 
     def check_accuracy(self, truth: str, response: str) -> bool:
         """检查回答准确性"""
@@ -560,9 +687,11 @@ class CorrectedRAGEvaluator:
             '平均chunk召回率': _avg('chunk召回率'),
             '平均chunk精确率': _avg('chunk精确率'),
             '平均chunkF1': _avg('chunkF1'),
-            '平均答案完整性': _avg('答案完整性'),
-            '平均事实一致性': _avg('事实一致性'),
-            '平均推理能力': _avg('推理能力'),
+            '平均Hit@K': _avg('Hit@K'),
+            '平均MRR': _avg('MRR'),
+            '平均EM': _avg('EM'),
+            '平均MultiHopScore': _avg('MultiHopScore'),
+            '平均MultiDocScore': _avg('MultiDocScore'),
             '平均响应时间': round(
                 sum(r['评估指标'].get('耗时', 0.0) for r in valid_results) / total_cases, 2
             ),
@@ -660,9 +789,11 @@ class CorrectedRAGEvaluator:
             "平均chunk召回率",
             "平均chunk精确率",
             "平均chunkF1",
-            "平均答案完整性",
-            "平均事实一致性",
-            "平均推理能力",
+            "平均Hit@K",
+            "平均MRR",
+            "平均EM",
+            "平均MultiHopScore",
+            "平均MultiDocScore",
             "平均响应时间",
         ]:
             if k in avg_metrics:
@@ -829,52 +960,65 @@ class CorrectedRAGEvaluator:
                     '理想值': '1.0',
                     '当前实现': '基于上述chunk召回率与chunk精确率计算得到的综合指标',
                     '说明': '综合考虑检索的“找全”和“找准”。'
+                },
+                'Hit@K': {
+                    '定义': '在 Top-K 检索结果中是否至少出现一个命中标准chunk。',
+                    '计算公式': '若存在命中标准chunk则为1，否则为0；当前实现中 K=10。',
+                    '理想值': '1.0',
+                    '当前实现': '基于最终一轮检索结果（前10个chunk）的对齐情况计算 Hit@10',
+                    '说明': '衡量检索在前若干条结果中是否已经覆盖到至少一个关键证据。'
+                },
+                'MRR': {
+                    '定义': '基于首个命中标准chunk排序位置的平均倒数排名 (Mean Reciprocal Rank)。',
+                    '计算公式': '若首个命中标准chunk的rank为 r，则 MRR = 1/r；若无命中则为0。',
+                    '理想值': '1.0',
+                    '当前实现': '基于最终一轮检索结果中首个命中标准chunk的rank计算',
+                    '说明': '反映相关证据在检索结果列表中的靠前程度。'
                 }
             },
             '生成阶段指标': {
-                '答案准确性': {
-                    '定义': 'RAG生成的答案是否正确',
+                '答案是否正确': {
+                    '定义': '基于较宽松的规则自动判断生成答案是否与标准答案一致。',
                     '计算公式': '布尔值判断 (正确=1, 错误=0)',
                     '判断方法': [
-                        '完全文本匹配',
-                        '数值匹配（提取数字进行比较）',
-                        '关键词重叠度匹配 (>40%)'
+                        '文本包含关系',
+                        '数字是否有交集'
                     ],
                     '理想值': '1.0 (100%)',
-                    '当前实现': '自动判断，需人工复核'
+                    '当前实现': '用于快速自动打标，仍建议人工抽查复核'
                 },
-                '答案完整性': {
-                    '定义': '回答在证据层面和文本层面覆盖问题所需信息的程度',
-                    '计算公式': '答案完整性 = 0.6 * chunk召回率 + 0.4 * 文本完整性',
+                'EM': {
+                    '定义': 'Exact Match，严格意义上的答案完全匹配度。',
+                    '计算公式': '对标准答案与系统回答做归一化（大小写、空格、常见标点），若字符串完全一致则记为1，否则为0。',
+                    '理想值': '1.0',
+                    '当前实现': '作为严格的自动 EM 指标，可视作 EM@1'
+                },
+                'MultiHopScore': {
+                    '定义': '针对“多跳推理型”问题，评估系统在多步推理任务上的整体表现。',
+                    '计算公式': 'MultiHopScore = 0.3*R + 0.3*E + 0.4*A',
                     '评分细则': {
-                        '文本完整性': '根据回答是否包含与标准答案一致的关键数值和单位打分（0~1）',
-                        'chunk召回率': '命中的标准chunk数量 / 标准chunk总数量'
+                        'R': '推理链条的完整性与逻辑正确性（0~1，由 LLM 依据证据给出）',
+                        'E': '是否充分、正确地整合了多段证据（0~1，由 LLM 给出）',
+                        'A': '最终答案是否与标准答案在关键结论上一致（0~1，由 LLM 给出）',
+                        '有效性条件': '仅当命中的标准chunk数量不少于2且问题类型为“多跳推理型”时才计算该指标，否则为0'
                     },
                     '理想值': '1.0',
-                    '说明': '既要求检索阶段覆盖足够多的标准证据chunk，也要求最终回答文本中包含关键数值和单位'
+                    '说明': '反映系统在需要跨多个证据片段进行推理时的整体能力。'
                 },
-                '事实一致性': {
-                    '定义': '回答中的关键事实是否与标准答案以及对应证据chunk保持一致',
-                    '计算公式': '事实一致性 = 0.5 * 数值一致性 + 0.5 * 证据一致性',
+                'MultiDocScore': {
+                    '定义': '针对“多论文推理型”问题，评估系统在整合多篇论文证据时的推理与回答质量。',
+                    '计算公式': 'MultiDocScore = 0.3*R + 0.3*E + 0.4*A',
                     '评分细则': {
-                        '数值一致性': '比较标准答案与系统回答中的数字，统计相对误差<=20%的匹配比例',
-                        '证据一致性': '在命中的标准chunk及其对应检索chunk中，检查数值是否一致或仅有微小误差'
+                        'R': '是否检索并利用了足够多篇相关论文（0~1，由 LLM 给出）',
+                        'E': '是否正确整合了不同论文中的关键信息与证据（0~1，由 LLM 给出）',
+                        'A': '最终结论是否与标准答案及多篇论文的证据一致（0~1，由 LLM 给出）',
+                        '有效性条件': '仅当命中证据涉及不少于2个不同文档时才计算该指标，否则为0'
                     },
                     '理想值': '1.0',
-                    '说明': '既避免回答中的数值与标准答案明显冲突，也要求这些数值在命中的证据chunk中能够找到依据'
-                }
+                    '说明': '衡量系统在跨论文整合与比较分析场景下的表现。'
+                },
             },
             '整体性能指标': {
-                '推理能力': {
-                    '定义': '系统利用检索到的证据进行推理并给出合理答案的能力',
-                    '计算方法': {
-                        '难度权重 w_d': '多跳推理型问题 1.0，方法/实验型 0.8，事实型 0.6',
-                        '证据因子 E': 'E = 0.5 * chunkF1 + 0.5 * (命中标准chunk数量 / 标准chunk总数)',
-                        '答案合理性因子 A': 'A = 0.5 * 答案完整性 + 0.5 * 事实一致性',
-                        '推理能力': '推理能力 = w_d * (0.6 * E + 0.4 * A)'
-                    },
-                    '说明': '多跳推理型问题在命中足够多证据chunk且F1较高时推理能力得分最高，事实型问题的推理能力上限相对较低'
-                },
                 '平均响应时间': {
                     '定义': '系统处理单个查询的平均耗时',
                     '计算公式': '所有测试用例执行时间总和 / 测试用例数量',
@@ -909,6 +1053,17 @@ class CorrectedRAGEvaluator:
             stats['chunk召回率汇总'] += metrics.get('chunk召回率', 0.0)
             stats['chunk精确率汇总'] += metrics.get('chunk精确率', 0.0)
             stats['chunkF1汇总'] += metrics.get('chunkF1', 0.0)
+            # 新增指标汇总
+            stats.setdefault('Hit@K汇总', 0.0)
+            stats.setdefault('MRR汇总', 0.0)
+            stats.setdefault('EM汇总', 0.0)
+            stats.setdefault('MultiHopScore汇总', 0.0)
+            stats.setdefault('MultiDocScore汇总', 0.0)
+            stats['Hit@K汇总'] += metrics.get('Hit@K', 0.0)
+            stats['MRR汇总'] += metrics.get('MRR', 0.0)
+            stats['EM汇总'] += metrics.get('EM', 0.0)
+            stats['MultiHopScore汇总'] += metrics.get('MultiHopScore', 0.0)
+            stats['MultiDocScore汇总'] += metrics.get('MultiDocScore', 0.0)
 
         # 计算比率，使用正确的字段名
         for query_type, stats in type_stats.items():
@@ -918,12 +1073,22 @@ class CorrectedRAGEvaluator:
                 stats['平均chunk召回率'] = round(stats['chunk召回率汇总'] / count, 3)
                 stats['平均chunk精确率'] = round(stats['chunk精确率汇总'] / count, 3)
                 stats['平均chunkF1'] = round(stats['chunkF1汇总'] / count, 3)
+                stats['平均Hit@K'] = round(stats.get('Hit@K汇总', 0.0) / count, 3)
+                stats['平均MRR'] = round(stats.get('MRR汇总', 0.0) / count, 3)
+                stats['平均EM'] = round(stats.get('EM汇总', 0.0) / count, 3)
+                stats['平均MultiHopScore'] = round(stats.get('MultiHopScore汇总', 0.0) / count, 3)
+                stats['平均MultiDocScore'] = round(stats.get('MultiDocScore汇总', 0.0) / count, 3)
                 stats['平均耗时'] = f"{stats['总耗时'] / count:.2f}秒"
 
             # 清理中间累加字段
             stats.pop('chunk召回率汇总', None)
             stats.pop('chunk精确率汇总', None)
             stats.pop('chunkF1汇总', None)
+            stats.pop('Hit@K汇总', None)
+            stats.pop('MRR汇总', None)
+            stats.pop('EM汇总', None)
+            stats.pop('MultiHopScore汇总', None)
+            stats.pop('MultiDocScore汇总', None)
 
         return type_stats
 
@@ -943,9 +1108,11 @@ class CorrectedRAGEvaluator:
         print(f"   🔍 平均chunk召回率: {metrics['平均chunk召回率']}")
         print(f"   🎯 平均chunk精确率: {metrics['平均chunk精确率']}")
         print(f"   🔁 平均chunkF1: {metrics['平均chunkF1']}")
-        print(f"   ✅ 平均答案完整性: {metrics['平均答案完整性']}")
-        print(f"   🔄 平均事实一致性: {metrics['平均事实一致性']}")
-        print(f"   💡 平均推理能力: {metrics['平均推理能力']}")
+        print(f"   🎯 平均Hit@K: {metrics['平均Hit@K']}")
+        print(f"   📐 平均MRR: {metrics['平均MRR']}")
+        print(f"   ✅ 平均EM: {metrics['平均EM']}")
+        print(f"   💡 平均MultiHopScore: {metrics['平均MultiHopScore']}")
+        print(f"   📚 平均MultiDocScore: {metrics['平均MultiDocScore']}")
         print(f"   ⏱️  平均响应时间: {metrics['平均响应时间']}秒")
 
         print("\n📋 按问题类型分析:")

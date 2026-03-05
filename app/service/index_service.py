@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -154,6 +155,8 @@ def _load_sentence_transformer(model_path_or_id: str, *, local_files_only: bool)
     - 优先使用 GPU（cuda），无 GPU 时回退到 CPU
     """
     device = _get_embedding_device()
+    print(device)
+    logging.error(f"device={device}")
     try:
         return SentenceTransformer(
             model_path_or_id,

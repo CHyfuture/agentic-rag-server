@@ -33,6 +33,12 @@ RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
 ARG REFRESH_DATE=1
 RUN --mount=type=ssh pip install --no-cache-dir -r requirement_customer.txt
 
+
+RUN pip install python-multipart
+RUN pip install peft
+
+
+
 EXPOSE 5010
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5010"]

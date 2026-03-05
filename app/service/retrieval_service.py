@@ -113,21 +113,37 @@ def _resolve_embedding_model_path() -> tuple[str, bool]:
     return model_name, False
 
 
+def _get_embedding_device() -> str:
+    """获取 Embedding 模型运行设备：有 GPU 时用 cuda，否则用 cpu。可通过环境变量 EMBEDDING_DEVICE 覆盖。"""
+    import torch
+
+    env_device = os.getenv("EMBEDDING_DEVICE", "").strip().lower()
+    if env_device in ("cuda", "cpu", "mps"):
+        return env_device
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 @lru_cache(maxsize=1)
 def _get_embedding_model():
-    """懒加载 embedding 模型，优先使用本地路径且不请求 Hugging Face。"""
+    """懒加载 embedding 模型，优先使用本地路径且不请求 Hugging Face，有 GPU 时使用 cuda。"""
     _configure_embedding_logging()
     from sentence_transformers import SentenceTransformer
 
     model_path_or_id, local_only = _resolve_embedding_model_path()
+    device = _get_embedding_device()
     try:
         return SentenceTransformer(
             model_path_or_id,
+            device=device,
             local_files_only=local_only,
             trust_remote_code=True,
         )
     except TypeError:
-        return SentenceTransformer(model_path_or_id, local_files_only=local_only)
+        return SentenceTransformer(
+            model_path_or_id,
+            device=device,
+            local_files_only=local_only,
+        )
 
 
 def _encode_query(query: str) -> list[float]:

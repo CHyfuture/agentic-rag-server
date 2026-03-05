@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import torch
 from dotenv import load_dotenv
 from pymilvus import (
     Collection,
@@ -137,21 +138,33 @@ def _resolve_embedding_model_path() -> tuple[str, bool]:
     return str(Path(model_name).resolve()), True
 
 
+def _get_embedding_device() -> str:
+    """获取 Embedding 模型运行设备：有 GPU 时用 cuda，否则用 cpu。可通过环境变量 EMBEDDING_DEVICE 覆盖。"""
+    env_device = os.getenv("EMBEDDING_DEVICE", "").strip().lower()
+    if env_device in ("cuda", "cpu", "mps"):
+        return env_device
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def _load_sentence_transformer(model_path_or_id: str, *, local_files_only: bool) -> SentenceTransformer:
     """
     兼容不同版本 sentence-transformers：
     - 新版本支持 trust_remote_code
     - 本地路径优先使用 local_files_only，避免任何网络请求
+    - 优先使用 GPU（cuda），无 GPU 时回退到 CPU
     """
+    device = _get_embedding_device()
     try:
         return SentenceTransformer(
             model_path_or_id,
+            device=device,
             local_files_only=local_files_only,
             trust_remote_code=True,
         )
     except TypeError:
         return SentenceTransformer(
             model_path_or_id,
+            device=device,
             local_files_only=local_files_only,
         )
 

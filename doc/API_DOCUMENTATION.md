@@ -37,6 +37,8 @@ BaseVector-Core/
 │   │   │   ├── __init__.py
 │   │   │   ├── base_parser.py
 │   │   │   ├── parser_factory.py
+│   │   │   ├── exceptions.py      # 解析异常（ParseError, DocTimeoutError 等）
+│   │   │   ├── mineru_parser.py  # MinerU 解析器（PDF/Word/PPT → Markdown）
 │   │   │   ├── pdf_parser.py
 │   │   │   ├── docx_parser.py
 │   │   │   ├── pptx_parser.py
@@ -127,6 +129,7 @@ BaseVector-Core/
 BaseOperator (抽象基类)
 │
 ├── BaseParser (文档解析器基类)
+│   ├── MinerUParser      # MinerU 解析（PDF/Word/PPT → Markdown，MINERU_ENABLED 时优先）
 │   ├── PDFParser
 │   ├── DocxParser
 │   ├── PPTXParser
@@ -181,12 +184,13 @@ RetrievalResult        # 检索结果数据类（retrievers使用）
 
 | 功能 | 支持格式 | 自定义支持 |
 |------|---------|----------|
-| PDF解析 | `.pdf` | ✅ 支持插件扩展 |
-| Word解析 | `.docx`, `.doc` | ✅ 支持插件扩展 |
-| PPT解析 | `.pptx`, `.ppt` | ✅ 支持插件扩展 |
-| HTML解析 | `.html`, `.htm` | ✅ 支持插件扩展 |
-| Markdown解析 | `.md`, `.markdown` | ✅ 支持插件扩展 |
-| TXT解析 | `.txt` | ✅ 支持插件扩展 |
+| MinerU 解析（可选） | `.pdf`, `.docx`, `.doc`, `.pptx`, `.ppt` | 由 `MINERU_ENABLED` 控制，启用时优先使用 MinerUParser（Word/PPT 先经 LibreOffice 转 PDF） |
+| PDF 解析 | `.pdf` | ✅ 支持插件扩展 |
+| Word 解析 | `.docx`, `.doc` | ✅ 支持插件扩展 |
+| PPT 解析 | `.pptx`, `.ppt` | ✅ 支持插件扩展 |
+| HTML 解析 | `.html`, `.htm` | ✅ 支持插件扩展 |
+| Markdown 解析 | `.md`, `.markdown` | ✅ 支持插件扩展 |
+| TXT 解析 | `.txt` | ✅ 支持插件扩展 |
 
 **自定义方式**: 继承 `BaseParser` 并实现 `_parse()` 方法，使用 `@register_parser` 装饰器注册
 
@@ -471,6 +475,47 @@ parser = PDFParser(config={
 |--------|------|------|
 | `lines` | `int` | 总行数 |
 | `paragraphs` | `int` | 段落数（按空行分隔） |
+
+### 4.1.4 MinerUParser（MinerU 文档解析）
+
+当配置 `MINERU_ENABLED=True`（默认）时，`ParserFactory` 对 `.pdf` / `.doc` / `.docx` / `.ppt` / `.pptx` 会使用 **MinerUParser**，其余格式仍使用对应内置解析器。
+
+**行为说明**:
+
+- **PDF**：直接调用 MinerU 服务解析，返回 Markdown（`md_content`）。
+- **Word / PPT**：先使用 LibreOffice 无头模式将文件转为 PDF，再调用 MinerU 解析为 Markdown。
+- 运行环境需满足：MinerU 服务可访问；解析 Word/PPT 时需安装 LibreOffice（`libreoffice` 命令）。
+
+**配置参数**（可通过 `parser_config` 或全局 Settings 覆盖）:
+
+| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| `mineru_url` | `str` | ❌ | `Settings.MINERU_URL` | MinerU 服务地址 |
+| `mineru_backend` | `str` | ❌ | `Settings.MINERU_BACKEND` | 解析后端 |
+| `mineru_parse_method` | `str` | ❌ | `Settings.MINERU_PARSE_METHOD` | 解析方法 |
+| `lock_timeout` | `int` | ❌ | `Settings.MINERU_LOCK_TIMEOUT` | 锁超时（秒） |
+| `lock_wait_timeout` | `int` | ❌ | `Settings.MINERU_LOCK_WAIT_TIMEOUT` | 等待锁超时（秒） |
+| `request_timeout` | `int` | ❌ | `Settings.MINERU_REQUEST_TIMEOUT` | API 请求超时（秒） |
+| `libreoffice_convert_timeout` | `int` | ❌ | `Settings.LIBREOFFICE_CONVERT_TIMEOUT` | LibreOffice 转换超时（秒） |
+
+**返回**: 与其它解析器一致，`content` 为 MinerU 返回的 Markdown 文本，`metadata` 含 `source` 等，`structure` 可为空。
+
+**异常**: 解析过程可能抛出 `ability.operators.parsers.exceptions` 中的 `ParseError`、`DocTimeoutError`、`NetworkError`、`APIError`。
+
+### 4.1.5 文档解析相关配置（MinerU / LibreOffice）
+
+以下配置项在 `ability/config.py` 的 `Settings` 中定义，支持环境变量、`.env` 及 `config/config.yaml`（YAML 中可使用 `mineru` 或 `parsers` 段）:
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `MINERU_ENABLED` | `bool` | `True` | 是否启用 MinerU 解析 PDF/Word/PPT |
+| `MINERU_URL` | `str` | `http://localhost:8000` | MinerU 服务地址 |
+| `MINERU_BACKEND` | `str` | `pdf` | MinerU 解析后端 |
+| `MINERU_PARSE_METHOD` | `str` | `auto` | MinerU 解析方法 |
+| `MINERU_LOCK_TIMEOUT` | `int` | `3600` | 解析锁持有超时（秒） |
+| `MINERU_LOCK_WAIT_TIMEOUT` | `int` | `600` | 等待解析锁超时（秒） |
+| `MINERU_REQUEST_TIMEOUT` | `int` | `3000` | MinerU API 请求超时（秒） |
+| `LIBREOFFICE_CONVERT_TIMEOUT` | `int` | `3000` | LibreOffice 转 PDF 超时（秒） |
 
 ---
 
@@ -1998,12 +2043,13 @@ logger.error("错误日志")
 
 ### 5.2 主要配置项
 
-详见 `app/config.py` 中的 `Settings` 类，主要配置项包括：
+详见 `ability/config.py` 中的 `Settings` 类，主要配置项包括：
 
-- **Milvus配置**: `MILVUS_HOST`, `MILVUS_PORT`, `MILVUS_INDEX_TYPE` 等
-- **向量模型配置**: `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIM`, `EMBEDDING_DEVICE` 等
+- **Milvus 配置**: `MILVUS_HOST`, `MILVUS_PORT`, `MILVUS_INDEX_TYPE`, `MILVUS_METRIC_TYPE`, `MILVUS_NLIST`, `MILVUS_NPROBE`, `MILVUS_COLLECTION_TEMPLATE` 等
+- **文档解析（MinerU / LibreOffice）**: `MINERU_ENABLED`, `MINERU_URL`, `MINERU_BACKEND`, `MINERU_PARSE_METHOD`, `MINERU_LOCK_TIMEOUT`, `MINERU_LOCK_WAIT_TIMEOUT`, `MINERU_REQUEST_TIMEOUT`, `LIBREOFFICE_CONVERT_TIMEOUT`（见 [4.1.5 文档解析相关配置](#415-文档解析相关配置mineru--libreoffice)）
 - **切片配置**: `CHUNK_SIZE`, `CHUNK_OVERLAP`, `CHUNK_STRATEGY` 等
-- **检索配置**: `TOP_K`, `SEARCH_MODE`, `RERANK_ENABLED` 等
+- **检索配置**: `TOP_K`, `SEARCH_MODE`, `RERANK_ENABLED`, `RERANK_MODEL_NAME`, `RETRIEVAL_CANDIDATE_MULTIPLIER`, `SIMILARITY_THRESHOLD`, `KEYWORD_FTS_LANGUAGE` 等
+- **多租户**: `ENABLE_MULTI_TENANT`, `DEFAULT_TENANT_ID`
 
 ---
 

@@ -1,8 +1,20 @@
 """检索 API 请求/响应模型。"""
 
-from typing import Any
+from typing import Any, List, Union
 
 from pydantic import BaseModel, Field
+
+
+def _doc_id_field() -> Any:
+    return Field(None, description="文档 ID 过滤，支持单值或数组，如 123 或 [1, 2, 3]")
+
+
+def _kb_id_field() -> Any:
+    return Field(None, description="知识库 ID 过滤，支持单值或数组")
+
+
+def _security_level_field() -> Any:
+    return Field(None, description="密级过滤，支持单值或数组")
 
 
 class SemanticSearchRequest(BaseModel):
@@ -15,6 +27,9 @@ class SemanticSearchRequest(BaseModel):
     keyword_text: str | None = Field(None, description="论文关键词模糊匹配过滤条件")
     author: str | None = Field(None, description="论文作者模糊匹配过滤条件")
     paper_title: str | None = Field(None, description="论文标题模糊匹配过滤条件")
+    doc_id: Union[int, List[int], None] = _doc_id_field()
+    kb_id: Union[int, List[int], None] = _kb_id_field()
+    security_level: Union[int, List[int], None] = _security_level_field()
     return_original_text: bool | None = Field(None, description="是否返回全文")
     return_parent_chunk: bool | None = Field(None, description="是否返回父 chunk")
 
@@ -27,6 +42,9 @@ class KeywordSearchRequest(BaseModel):
     keyword_text: str | None = Field(None, description="论文关键词模糊匹配过滤条件")
     author: str | None = Field(None, description="论文作者模糊匹配过滤条件")
     paper_title: str | None = Field(None, description="论文标题模糊匹配过滤条件")
+    doc_id: Union[int, List[int], None] = _doc_id_field()
+    kb_id: Union[int, List[int], None] = _kb_id_field()
+    security_level: Union[int, List[int], None] = _security_level_field()
     min_match_count: int | None = Field(None, ge=0, description="最少匹配关键词数量，少于此值返回分数0")
     return_original_text: bool | None = Field(None, description="是否返回全文")
     return_parent_chunk: bool | None = Field(None, description="是否返回父 chunk")
@@ -42,6 +60,9 @@ class HybridSearchRequest(BaseModel):
     keyword_text: str | None = Field(None, description="论文关键词模糊匹配过滤条件")
     author: str | None = Field(None, description="论文作者模糊匹配过滤条件")
     paper_title: str | None = Field(None, description="论文标题模糊匹配过滤条件")
+    doc_id: Union[int, List[int], None] = _doc_id_field()
+    kb_id: Union[int, List[int], None] = _kb_id_field()
+    security_level: Union[int, List[int], None] = _security_level_field()
     semantic_weight: float | None = Field(None, ge=0, le=1, description="语义检索权重，建议与keyword_weight和为1.0")
     keyword_weight: float | None = Field(None, ge=0, le=1, description="关键词检索权重")
     return_original_text: bool | None = Field(None, description="是否返回全文")
@@ -56,6 +77,9 @@ class FulltextSearchRequest(BaseModel):
     keyword_text: str | None = Field(None, description="论文关键词模糊匹配过滤条件")
     author: str | None = Field(None, description="论文作者模糊匹配过滤条件")
     paper_title: str | None = Field(None, description="论文标题模糊匹配过滤条件")
+    doc_id: Union[int, List[int], None] = _doc_id_field()
+    kb_id: Union[int, List[int], None] = _kb_id_field()
+    security_level: Union[int, List[int], None] = _security_level_field()
     min_match_count: int | None = Field(None, ge=0, description="最少匹配关键词数量")
     match_mode: str | None = Field(None, description="匹配模式：or(任一匹配)/and(全部匹配)")
     return_original_text: bool | None = Field(None, description="是否返回全文")
@@ -70,6 +94,9 @@ class TextMatchSearchRequest(BaseModel):
     keyword_text: str | None = Field(None, description="论文关键词模糊匹配过滤条件")
     author: str | None = Field(None, description="论文作者模糊匹配过滤条件")
     paper_title: str | None = Field(None, description="论文标题模糊匹配过滤条件")
+    doc_id: Union[int, List[int], None] = _doc_id_field()
+    kb_id: Union[int, List[int], None] = _kb_id_field()
+    security_level: Union[int, List[int], None] = _security_level_field()
     match_type: str | None = Field(None, description="匹配类型：exact(精确)/fuzzy(模糊)")
     case_sensitive: bool | None = Field(None, description="是否区分大小写")
     return_original_text: bool | None = Field(None, description="是否返回全文")
@@ -84,6 +111,9 @@ class PhraseMatchSearchRequest(BaseModel):
     keyword_text: str | None = Field(None, description="论文关键词模糊匹配过滤条件")
     author: str | None = Field(None, description="论文作者模糊匹配过滤条件")
     paper_title: str | None = Field(None, description="论文标题模糊匹配过滤条件")
+    doc_id: Union[int, List[int], None] = _doc_id_field()
+    kb_id: Union[int, List[int], None] = _kb_id_field()
+    security_level: Union[int, List[int], None] = _security_level_field()
     case_sensitive: bool | None = Field(None, description="是否区分大小写")
     allow_partial: bool | None = Field(None, description="是否允许部分匹配")
     return_original_text: bool | None = Field(None, description="是否返回全文")

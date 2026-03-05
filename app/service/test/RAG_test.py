@@ -1074,7 +1074,6 @@ class CorrectedRAGEvaluator:
                 }
             }
         }
-
     def analyze_by_query_type_with_correct_names(self, results: List[Dict]) -> Dict:
         """按问题类型分析性能 - 使用正确的字段名称"""
         type_stats = {}

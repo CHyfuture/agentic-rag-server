@@ -57,7 +57,6 @@ if not logger.handlers:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-
 def _append_trace_log(trace: Dict[str, Any]) -> None:
     """
     将本次 RAG 流程的完整 trace 以结构化形式写入统一的 rag_flow.log 中。

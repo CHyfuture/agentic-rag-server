@@ -808,6 +808,7 @@ async def build_index_from_json_contents(
 
             try:
                 created = await doc_client.create_document(document)
+                logging.error(f"created={created}")
             except Exception as exc:
                 skipped_files.append(filename)
                 continue
@@ -820,7 +821,7 @@ async def build_index_from_json_contents(
             if not isinstance(doc_id, int):
                 skipped_files.append(filename)
                 continue
-
+        logging.error(f"doc_id={doc_id}")
         records, chunk_models = _build_records_and_chunks(
             data=data,
             kb_id=kb_id,
@@ -831,7 +832,8 @@ async def build_index_from_json_contents(
             security_level=security_level,
             owner_id=owner_id,
         )
-
+        logging.error(f"records={records}")
+        logging.error(f"chunk_models={chunk_models}")
         if not records:
             skipped_files.append(filename)
             continue

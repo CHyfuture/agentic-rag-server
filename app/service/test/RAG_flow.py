@@ -124,7 +124,7 @@ class RAGFlow:
         # 最大迭代次数（完整RAG轮数）
         self.max_iterations = 3
         # 最多允许的 query 改写轮数
-        self.max_rewrite_rounds = 3
+        self.max_rewrite_rounds = 2
 
     def _estimate_rewrite_difference(self, original_query: str, rewritten_query: str) -> Dict[str, float]:
         """

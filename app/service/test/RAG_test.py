@@ -367,9 +367,9 @@ class CorrectedRAGEvaluator:
         ground_truth = ground_truth_raw.lower().strip()
         rag_answer = response_raw.lower().strip()
 
-        # 1. 基础准确率与 EM
+        # 1. 基础准确率与 EM（EM 与「答案是否正确」一致：匹配=1，不匹配=0）
         auto_correct = self.check_accuracy(ground_truth, rag_answer)
-        em_score = self._compute_em(ground_truth_raw, response_raw)
+        em_score = 1 if auto_correct else 0
 
         # 2. chunk 级检索指标（召回率 / 精确率 / F1 / Hit@K / MRR）
         gt_chunks = self._build_gt_chunks(case)
@@ -584,6 +584,19 @@ class CorrectedRAGEvaluator:
         if not truth or not response:
             return False
 
+        # 无答案型：标准答案与系统回答均表示「无法回答/信息不足」时判为正确
+        _no_answer_keywords = (
+            "无法回答", "信息不足", "不足以回答", "没有相关", "未包含",
+            "无法从", "无法提供", "没有找到", "未找到", "资料未包含",
+            "现有信息", "无法确定", "无法给出", "不能回答", "难以回答",
+        )
+        t = truth.strip().lower()
+        r = response.strip().lower()
+        truth_is_no_answer = any(k in t for k in _no_answer_keywords)
+        response_is_no_answer = any(k in r for k in _no_answer_keywords)
+        if truth_is_no_answer and response_is_no_answer:
+            return True
+
         # 完全匹配
         if truth in response or response in truth:
             return True
@@ -683,6 +696,26 @@ class CorrectedRAGEvaluator:
                 return 0.0
             return round(sum(values) / len(values), 3)
 
+        # 平均 MultiHopScore：仅多跳推理型
+        multihop_results = [r for r in valid_results if r.get('query_type') == '多跳推理型']
+        if multihop_results:
+            avg_multihop = round(
+                sum(r['评估指标'].get('MultiHopScore', 0.0) for r in multihop_results)
+                / len(multihop_results), 3
+            )
+        else:
+            avg_multihop = 0.0
+
+        # 平均 MultiDocScore：仅多论文推理型
+        multidoc_results = [r for r in valid_results if r.get('query_type') == '多论文推理型']
+        if multidoc_results:
+            avg_multidoc = round(
+                sum(r['评估指标'].get('MultiDocScore', 0.0) for r in multidoc_results)
+                / len(multidoc_results), 3
+            )
+        else:
+            avg_multidoc = 0.0
+
         avg_metrics = {
             '平均chunk召回率': _avg('chunk召回率'),
             '平均chunk精确率': _avg('chunk精确率'),
@@ -690,8 +723,10 @@ class CorrectedRAGEvaluator:
             '平均Hit@K': _avg('Hit@K'),
             '平均MRR': _avg('MRR'),
             '平均EM': _avg('EM'),
-            '平均MultiHopScore': _avg('MultiHopScore'),
-            '平均MultiDocScore': _avg('MultiDocScore'),
+            '平均MultiHopScore': avg_multihop,
+            '平均MultiHopScore说明': '仅多跳推理型',
+            '平均MultiDocScore': avg_multidoc,
+            '平均MultiDocScore说明': '仅多论文推理型',
             '平均响应时间': round(
                 sum(r['评估指标'].get('耗时', 0.0) for r in valid_results) / total_cases, 2
             ),
@@ -716,12 +751,12 @@ class CorrectedRAGEvaluator:
         }
 
         # 保存JSON报告到指定目录
-        report_path = self.report_dir / 'rag_evaluation_report.json'
+        report_path = self.report_dir / 'test_report.json'
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
 
         # 生成静态HTML报告
-        html_path = self.report_dir / 'rag_evaluation_report.html'
+        html_path = self.report_dir / 'test_report.html'
         html_content = self._build_html_report(report)
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -797,7 +832,12 @@ class CorrectedRAGEvaluator:
             "平均响应时间",
         ]:
             if k in avg_metrics:
-                html_parts.append(f"<tr><td>{esc(k)}</td><td>{esc(avg_metrics[k])}</td></tr>")
+                val = avg_metrics[k]
+                if k == "平均MultiHopScore" and avg_metrics.get("平均MultiHopScore说明"):
+                    val = f"{val} （{avg_metrics['平均MultiHopScore说明']}）"
+                elif k == "平均MultiDocScore" and avg_metrics.get("平均MultiDocScore说明"):
+                    val = f"{val} （{avg_metrics['平均MultiDocScore说明']}）"
+                html_parts.append(f"<tr><td>{esc(k)}</td><td>{esc(val)}</td></tr>")
         html_parts.append("</table>")
 
         # 按问题类型分析
@@ -806,7 +846,9 @@ class CorrectedRAGEvaluator:
             html_parts.append("<table>")
             html_parts.append(
                 "<tr><th>问题类型</th><th>数量</th><th>自动判定的问答匹配率</th>"
-                "<th>平均chunk召回率</th><th>平均chunk精确率</th><th>平均chunkF1</th><th>平均耗时</th></tr>"
+                "<th>平均chunk召回率</th><th>平均chunk精确率</th><th>平均chunkF1</th>"
+                "<th>平均EM</th><th>平均MRR</th><th>平均Hit@K</th>"
+                "<th>平均MultiHopScore</th><th>平均MultiDocScore</th><th>平均耗时</th></tr>"
             )
             for qtype, stats in type_stats.items():
                 html_parts.append(
@@ -817,6 +859,11 @@ class CorrectedRAGEvaluator:
                     f"<td>{esc(stats.get('平均chunk召回率', ''))}</td>"
                     f"<td>{esc(stats.get('平均chunk精确率', ''))}</td>"
                     f"<td>{esc(stats.get('平均chunkF1', ''))}</td>"
+                    f"<td>{esc(stats.get('平均EM', ''))}</td>"
+                    f"<td>{esc(stats.get('平均MRR', ''))}</td>"
+                    f"<td>{esc(stats.get('平均Hit@K', ''))}</td>"
+                    f"<td>{esc(stats.get('平均MultiHopScore', ''))}</td>"
+                    f"<td>{esc(stats.get('平均MultiDocScore', ''))}</td>"
                     f"<td>{esc(stats.get('平均耗时', ''))}</td>"
                     "</tr>"
                 )
@@ -1076,9 +1123,28 @@ class CorrectedRAGEvaluator:
                 stats['平均Hit@K'] = round(stats.get('Hit@K汇总', 0.0) / count, 3)
                 stats['平均MRR'] = round(stats.get('MRR汇总', 0.0) / count, 3)
                 stats['平均EM'] = round(stats.get('EM汇总', 0.0) / count, 3)
-                stats['平均MultiHopScore'] = round(stats.get('MultiHopScore汇总', 0.0) / count, 3)
-                stats['平均MultiDocScore'] = round(stats.get('MultiDocScore汇总', 0.0) / count, 3)
+                # MultiHopScore 仅多跳推理型有效，其他类型标为「无」
+                if query_type == '多跳推理型':
+                    stats['平均MultiHopScore'] = round(stats.get('MultiHopScore汇总', 0.0) / count, 3)
+                else:
+                    stats['平均MultiHopScore'] = '无'
+                # MultiDocScore 仅多论文推理型有效，其他类型标为「无」
+                if query_type == '多论文推理型':
+                    stats['平均MultiDocScore'] = round(stats.get('MultiDocScore汇总', 0.0) / count, 3)
+                else:
+                    stats['平均MultiDocScore'] = '无'
                 stats['平均耗时'] = f"{stats['总耗时'] / count:.2f}秒"
+                # 无答案型：chunk 与检索相关指标无意义，均标为「无」
+                if query_type == '无答案型':
+                    stats['平均chunk召回率'] = '无'
+                    stats['平均chunk精确率'] = '无'
+                    stats['平均chunkF1'] = '无'
+                    stats['平均EM'] = '无'
+                    stats['平均MRR'] = '无'
+                    stats['平均Hit@K'] = '无'
+            else:
+                stats['平均MultiHopScore'] = '无'
+                stats['平均MultiDocScore'] = '无'
 
             # 清理中间累加字段
             stats.pop('chunk召回率汇总', None)
@@ -1111,8 +1177,8 @@ class CorrectedRAGEvaluator:
         print(f"   🎯 平均Hit@K: {metrics['平均Hit@K']}")
         print(f"   📐 平均MRR: {metrics['平均MRR']}")
         print(f"   ✅ 平均EM: {metrics['平均EM']}")
-        print(f"   💡 平均MultiHopScore: {metrics['平均MultiHopScore']}")
-        print(f"   📚 平均MultiDocScore: {metrics['平均MultiDocScore']}")
+        print(f"   💡 平均MultiHopScore: {metrics['平均MultiHopScore']} （{metrics.get('平均MultiHopScore说明', '仅多跳推理型')}）")
+        print(f"   📚 平均MultiDocScore: {metrics['平均MultiDocScore']} （{metrics.get('平均MultiDocScore说明', '仅多论文推理型')}）")
         print(f"   ⏱️  平均响应时间: {metrics['平均响应时间']}秒")
 
         print("\n📋 按问题类型分析:")

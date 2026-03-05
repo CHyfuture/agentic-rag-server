@@ -155,8 +155,6 @@ def _load_sentence_transformer(model_path_or_id: str, *, local_files_only: bool)
     - 优先使用 GPU（cuda），无 GPU 时回退到 CPU
     """
     device = _get_embedding_device()
-    print(device)
-    logging.error(f"device={device}")
     try:
         return SentenceTransformer(
             model_path_or_id,
@@ -491,7 +489,23 @@ def _extract_chunk_ids_from_batch_response(
     """
     if created is None or not records:
         return []
-    items = created if isinstance(created, (list, tuple)) else getattr(created, "data", None) or getattr(created, "items", None) or []
+    if isinstance(created, (list, tuple)):
+        items = created
+    elif isinstance(created, dict):
+        data = created.get("data") or created.get("items") or created.get("list")
+        if isinstance(data, dict):
+            items = data.get("list") or data.get("items") or data.get("data") or []
+        elif isinstance(data, (list, tuple)):
+            items = data
+        else:
+            items = []
+    else:
+        data = getattr(created, "data", None) or getattr(created, "items", None)
+        items = (
+            (data.get("list") or data.get("items") or data.get("data") or [])
+            if isinstance(data, dict)
+            else (data if isinstance(data, (list, tuple)) else [])
+        )
     if not isinstance(items, (list, tuple)) or len(items) != len(records):
         return []
 
@@ -808,20 +822,25 @@ async def build_index_from_json_contents(
 
             try:
                 created = await doc_client.create_document(document)
-                logging.error(f"created={created}")
             except Exception as exc:
                 skipped_files.append(filename)
                 continue
 
             if isinstance(created, dict):
-                doc_id = created.get("data")["id"]
+                data = created.get("data")
+                raw_id = data.get("id") if isinstance(data, dict) else None
             else:
+                raw_id = getattr(created, "id", None) or (
+                    getattr(getattr(created, "data", None), "id", None) if hasattr(created, "data") else None
+                )
+            try:
+                doc_id = int(raw_id) if raw_id is not None else None
+            except (TypeError, ValueError):
                 doc_id = None
 
             if not isinstance(doc_id, int):
                 skipped_files.append(filename)
                 continue
-        logging.error(f"doc_id={doc_id}")
         records, chunk_models = _build_records_and_chunks(
             data=data,
             kb_id=kb_id,
@@ -841,19 +860,21 @@ async def build_index_from_json_contents(
         if not skip_base_db:
             created = await chunk_client.create_document_chunk_batch(chunk_models)
             chunk_ids = _extract_chunk_ids_from_batch_response(created, records)
-            if not chunk_ids:
-                skipped_files.append(filename)
-                continue
-            for rec, cid in zip(records, chunk_ids):
-                rec["id"] = cid
-        logging.error(f"records={records}")
-        logging.error(f"collection={collection}")
+            if chunk_ids:
+                for rec, cid in zip(records, chunk_ids):
+                    rec["id"] = cid
+            else:
+                # chunk_id 提取失败时仍写入 Milvus，使用 records 中已有的 hash id，避免数据丢失
+                logging.warning(
+                    "无法从 BaseDB create_document_chunk_batch 响应中提取 chunk_id，"
+                    "将使用 records 原有 id 写入 Milvus。响应格式可能与预期不符: %s",
+                    type(created).__name__,
+                )
         insert_req = InsertRequest(
             collection_name=collection,
             records=records,
         )
         ids = StorageService.insert(insert_req)
-        logging.error(f"ids={ids}")
         inserted_count = len(ids)
         total_documents += 1
         total_chunks += len(chunk_models)
@@ -947,7 +968,6 @@ async def insert_single_paper_data(
             rec["id"] = cid
 
     insert_req = InsertRequest(collection_name=collection, records=records)
-    logging.error(f"collection={collection}, records={records}")
     ids = StorageService.insert(insert_req)
 
     return {

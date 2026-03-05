@@ -832,8 +832,7 @@ async def build_index_from_json_contents(
             security_level=security_level,
             owner_id=owner_id,
         )
-        logging.error(f"records={records}")
-        logging.error(f"chunk_models={chunk_models}")
+
         if not records:
             skipped_files.append(filename)
             continue
@@ -847,13 +846,14 @@ async def build_index_from_json_contents(
                 continue
             for rec, cid in zip(records, chunk_ids):
                 rec["id"] = cid
-
+        logging.error(f"records={records}")
+        logging.error(f"collection={collection}")
         insert_req = InsertRequest(
             collection_name=collection,
             records=records,
         )
         ids = StorageService.insert(insert_req)
-
+        logging.error(f"ids={ids}")
         inserted_count = len(ids)
         total_documents += 1
         total_chunks += len(chunk_models)

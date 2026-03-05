@@ -28,19 +28,19 @@ fi
 
 # 停止并删除旧容器（如果存在）
 echo "正在停止旧容器..."
-docker stop agentic-rag-server 2>/dev/null || true
+docker stop agentic-rag-new-server 2>/dev/null || true
 
 echo "正在删除旧容器..."
-docker rm agentic-rag-server 2>/dev/null || true
+docker rm agentic-rag-new-server 2>/dev/null || true
 
 # 启动新容器
-echo "正在启动容器: agentic-rag-server:$VERSION"
-docker run -d --name agentic-rag-server -p 8999:8000 -v /home/general/agentic-rag-server/workspace:/app/workspace  -e RERANK_MODEL_NAME=workspace/jina-reranker-v3  agentic-rag-server:$VERSION
+echo "正在启动容器: agentic-rag-new-server:$VERSION"
+docker run -d --name agentic-rag-new-server -p 5010:8000 -v /home/general/agentic-rag-new-server/workspace:/app/workspace  -e RERANK_MODEL_NAME=workspace/jina-reranker-v3  agentic-rag-new-server:$VERSION
 
 if [ $? -eq 0 ]; then
   echo "容器启动成功！"
-  echo "容器名称: agentic-rag-server"
-  echo "镜像标签: agentic-rag-server:$VERSION"
+  echo "容器名称: agentic-rag-new-server"
+  echo "镜像标签: agentic-rag-new-server:$VERSION"
   echo "端口映射: 8999:8000"
 else
   echo "容器启动失败！"
@@ -48,4 +48,4 @@ else
 fi
 
 # 查看日志
-docker logs -f agentic-rag-server
+docker logs -f agentic-rag-new-server

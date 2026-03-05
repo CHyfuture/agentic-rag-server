@@ -27,11 +27,11 @@ if [ -z "$VERSION" ]; then
 fi
 git pull
 # 构建 Docker 镜像
-echo "正在构建 Docker 镜像: agentic-rag-server:$VERSION"
-docker build --build-arg REFRESH_DATE=$(date +%s) -t agentic-rag-server:$VERSION .
+echo "正在构建 Docker 镜像: agentic-rag-new-server:$VERSION"
+docker build --build-arg REFRESH_DATE=$(date +%s) -t agentic-rag-new-server:$VERSION .
 
 if [ $? -eq 0 ]; then
-  echo "构建成功！镜像标签: agentic-rag-server:$VERSION"
+  echo "构建成功！镜像标签: agentic-rag-new-server:$VERSION"
 else
   echo "构建失败！"
   exit 1

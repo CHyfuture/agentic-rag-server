@@ -16,7 +16,8 @@ COPY . .
 RUN apt-get update && apt-get install -y git openssh-client && rm -rf /var/lib/apt/lists/*
 
 # 2. 自动信任 GitHub 的公钥（解决 Host key verification failed）
-RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+RUN mkdir -p -m 0700 /root/.ssh && \
+    ssh-keyscan -v github.com >> /root/.ssh/known_hosts
 
 # 3. 使用 --mount=type=ssh 执行安装
 ARG REFRESH_DATE=1

@@ -20,9 +20,6 @@ WORKDIR /app
 
 COPY . .
 
-# 使用 .env.example 作为构建时的环境配置（应用通过 load_dotenv 加载 .env）
-COPY .env.example .env
-
 # 1. 安装 git（如果基础镜像里没有的话）
 RUN apt-get update && apt-get install -y git openssh-client && rm -rf /var/lib/apt/lists/*
 

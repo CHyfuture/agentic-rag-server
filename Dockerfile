@@ -20,17 +20,12 @@ WORKDIR /app
 
 COPY . .
 
-ENV HOST=0.0.0.0 \
-    PORT=8000 \
-    MILVUS_HOST=192.168.31.51 \
-    MILVUS_PORT=19530 \
-    MILVUS_DB_NAME=default \
-    COLLECTION_NAME=icau_papers_collection     \
-    EMBEDDING_MODEL=workspace/jina-embeddings-v5-text-small
+# 使用 .env.example 作为构建时的环境配置（应用通过 load_dotenv 加载 .env）
+COPY .env.example .env
 
 ARG REFRESH_DATE=1
 RUN pip install --no-cache-dir -r requirement_customer.txt
 
-EXPOSE 8000
+EXPOSE 5010
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5010"]

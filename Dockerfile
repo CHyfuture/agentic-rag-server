@@ -23,8 +23,15 @@ COPY . .
 # 使用 .env.example 作为构建时的环境配置（应用通过 load_dotenv 加载 .env）
 COPY .env.example .env
 
+# 1. 安装 git（如果基础镜像里没有的话）
+RUN apt-get update && apt-get install -y git ssh && rm -rf /var/lib/apt/lists/*
+
+# 2. 自动信任 GitHub 的公钥（解决 Host key verification failed）
+RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+# 3. 使用 --mount=type=ssh 执行安装
 ARG REFRESH_DATE=1
-RUN pip install --no-cache-dir -r requirement_customer.txt
+RUN --mount=type=ssh pip install --no-cache-dir -r requirement_customer.txt
 
 EXPOSE 5010
 

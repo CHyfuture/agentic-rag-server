@@ -27,14 +27,8 @@ if [ -z "$VERSION" ]; then
 fi
 git pull
 # 构建 Docker 镜像
-# 若 SSH 克隆失败（如 Connection closed / 网络受限），改用 HTTPS：GITHUB_TOKEN=ghp_xxx ./build.sh -t 1.0.0
 echo "正在构建 Docker 镜像: agentic-rag-new-server:$VERSION"
-if [ -n "$GITHUB_TOKEN" ]; then
-  echo "使用 HTTPS 方式安装私有依赖（GITHUB_TOKEN 已设置）"
-  DOCKER_BUILDKIT=1 docker build -f Dockerfile.https --secret id=github_token,env=GITHUB_TOKEN --build-arg REFRESH_DATE=$(date +%s) -t agentic-rag-new-server:$VERSION .
-else
-  DOCKER_BUILDKIT=1 docker build --ssh default=$SSH_AUTH_SOCK --build-arg REFRESH_DATE=$(date +%s) -t agentic-rag-new-server:$VERSION .
-fi
+DOCKER_BUILDKIT=1 docker build --ssh default=$SSH_AUTH_SOCK --build-arg REFRESH_DATE=$(date +%s) -t agentic-rag-new-server:$VERSION .
 
 if [ $? -eq 0 ]; then
   echo "构建成功！镜像标签: agentic-rag-new-server:$VERSION"

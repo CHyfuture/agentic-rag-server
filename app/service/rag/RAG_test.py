@@ -41,7 +41,7 @@ sys.path.insert(0, str(project_root))
 
 # 导入RAG流程
 try:
-    from app.service.test.RAG_flow import RAGFlow
+    from app.service.rag.RAG_flow import RAGFlow
     print("[INFO] 成功导入 RAG_flow")
 except ImportError as e:
     # 避免在默认 GBK 控制台下因 emoji 导致编码错误
@@ -67,8 +67,8 @@ class CorrectedRAGEvaluator:
         # 这些数据不会作为检索语料或提示内容传入 RAGFlow，只用于计算评估指标。
         self.rag_flow = RAGFlow()
 
-        # 构建正确的测试数据路径（使用 QA.json）
-        self.test_data_path = test_dir / "QA.json"
+        # 构建正确的测试数据路径（使用 QA.json，位于 app/service/rag 目录）
+        self.test_data_path = project_root / "app" / "service" / "rag" / "QA.json"
         # 报告与日志保存路径
         self.report_dir = test_dir
 
@@ -1206,7 +1206,7 @@ def main():
         print(f"❌ 文件未找到: {e}")
         print("\n💡 解决方案:")
         print("1. 确保在项目根目录下运行此脚本")
-        print("2. 确保 app/service/test/QA.json 文件存在")
+        print("2. 确保 app/service/rag/QA.json 文件存在")
     except KeyboardInterrupt:
         print("\n\n评估被用户中断")
     except Exception as e:

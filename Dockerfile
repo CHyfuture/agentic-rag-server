@@ -26,7 +26,7 @@ RUN mkdir -p -m 0700 ~/.ssh \
 ARG REFRESH_DATE=1
 RUN --mount=type=ssh,required pip install --no-cache-dir -r requirement_customer.txt
 
-
+RUN pip install peft
 
 EXPOSE 5010
 

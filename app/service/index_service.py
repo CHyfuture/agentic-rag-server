@@ -945,6 +945,7 @@ async def insert_single_paper_data(
             rec["id"] = cid
 
     insert_req = InsertRequest(collection_name=collection, records=records)
+    logging.error(f"collection={collection}, records={records}")
     ids = StorageService.insert(insert_req)
 
     return {

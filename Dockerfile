@@ -25,7 +25,7 @@ ENV HOST=0.0.0.0 \
     MILVUS_HOST=192.168.31.51 \
     MILVUS_PORT=19530 \
     MILVUS_DB_NAME=default \
-    COLLECTION_NAME=papers_chunks_collection     \
+    COLLECTION_NAME=icau_papers_collection     \
     EMBEDDING_MODEL=workspace/jina-embeddings-v5-text-small
 
 EXPOSE 8000

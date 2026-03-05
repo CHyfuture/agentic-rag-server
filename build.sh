@@ -28,7 +28,7 @@ fi
 git pull
 # 构建 Docker 镜像
 echo "正在构建 Docker 镜像: agentic-rag-new-server:$VERSION"
-docker build  --ssh default --build-arg REFRESH_DATE=$(date +%s) -t agentic-rag-new-server:$VERSION .
+DOCKER_BUILDKIT=1 docker build --ssh default=$SSH_AUTH_SOCK --build-arg REFRESH_DATE=$(date +%s) -t agentic-rag-new-server:$VERSION .
 
 if [ $? -eq 0 ]; then
   echo "构建成功！镜像标签: agentic-rag-new-server:$VERSION"

@@ -24,7 +24,7 @@ COPY . .
 COPY .env.example .env
 
 # 1. 安装 git（如果基础镜像里没有的话）
-RUN apt-get update && apt-get install -y git ssh && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git openssh-client && rm -rf /var/lib/apt/lists/*
 
 # 2. 自动信任 GitHub 的公钥（解决 Host key verification failed）
 RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
@@ -33,11 +33,8 @@ RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
 ARG REFRESH_DATE=1
 RUN --mount=type=ssh pip install --no-cache-dir -r requirement_customer.txt
 
-
 RUN pip install python-multipart
 RUN pip install peft
-
-
 
 EXPOSE 5010
 

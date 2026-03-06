@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument(
         "--input-dir",
         type=str,
-        default=r"D:\project\agentic-rag-server\前100修正\json_chinese_a",
+        default=r"C:\Users\11440\Desktop\第三批1967篇\json_chinese_901-2867",
         help="JSON 文件所在目录",
     )
     parser.add_argument(
@@ -56,34 +56,40 @@ def main() -> None:
         print(f"目录下无 JSON 文件: {input_dir}")
         return
 
-    # 构建 multipart/form-data：kb_id + files
-    files = [
-        ("files", (p.name, p.read_bytes(), "application/json"))
-        for p in json_files
-    ]
-    data = {"kb_id": args.kb_id}
+    BATCH_SIZE = 1000  # 每批最多 1000 个文件调用一次接口
+    total = len(json_files)
+    batches = [json_files[i : i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
 
-    print(f"共 {len(json_files)} 个 JSON 文件，正在调用 {args.api_url} ...")
-    try:
-        resp = requests.post(
-            args.api_url,
-            data=data,
-            files=files,
-            timeout=3600,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        print(f"构建完成: {result}")
-        if result.get("skipped_files"):
-            print(f"跳过文件: {result['skipped_files']}")
-    except requests.exceptions.RequestException as e:
-        print(f"请求失败: {e}")
-        if hasattr(e, "response") and e.response is not None:
-            try:
-                print(f"响应内容: {e.response.text}")
-            except Exception:
-                pass
-        raise
+    print(f"共 {total} 个 JSON 文件，分 {len(batches)} 批上传（每批最多 {BATCH_SIZE} 个）")
+
+    for batch_idx, batch in enumerate(batches):
+        files = [
+            ("files", (p.name, p.read_bytes(), "application/json"))
+            for p in batch
+        ]
+        data = {"kb_id": args.kb_id}
+
+        print(f"正在上传第 {batch_idx + 1}/{len(batches)} 批（{len(batch)} 个文件）...")
+        try:
+            resp = requests.post(
+                args.api_url,
+                data=data,
+                files=files,
+                timeout=3600,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            print(f"第 {batch_idx + 1} 批构建完成: {result}")
+            if result.get("skipped_files"):
+                print(f"跳过文件: {result['skipped_files']}")
+        except requests.exceptions.RequestException as e:
+            print(f"第 {batch_idx + 1} 批请求失败: {e}")
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    print(f"响应内容: {e.response.text}")
+                except Exception:
+                    pass
+            raise
 
 
 if __name__ == "__main__":

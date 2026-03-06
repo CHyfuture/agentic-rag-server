@@ -572,6 +572,70 @@ def _extract_paper_metadata(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _extract_doc_id_from_create_response(created: Any) -> Optional[int]:
+    """从 BaseDB create_document 返回值中提取 doc_id。"""
+    doc_id = None
+    if isinstance(created, dict):
+        created_data = created.get("data")
+        if isinstance(created_data, dict):
+            doc_id = created_data.get("id")
+        elif isinstance(created_data, (list, tuple)) and created_data:
+            first = created_data[0]
+            doc_id = first.get("id") if isinstance(first, dict) else None
+    elif hasattr(created, "data"):
+        data = getattr(created, "data", None)
+        if isinstance(data, dict):
+            doc_id = data.get("id")
+        elif isinstance(data, (list, tuple)) and data:
+            first = data[0]
+            doc_id = first.get("id") if isinstance(first, dict) else None
+
+    if isinstance(doc_id, bool):
+        return None
+    if isinstance(doc_id, (int, float)):
+        return int(doc_id)
+    return None
+
+
+def _extract_markdown_title(markdown_text: str, fallback: str) -> str:
+    """从 Markdown 提取一级标题；未命中时使用 fallback。"""
+    for line in markdown_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            title = stripped[2:].strip()
+            if title:
+                return title
+    return fallback
+
+
+def _build_markdown_paper_data(markdown_text: str, filename: str) -> Dict[str, Any]:
+    """将 Markdown 文本封装为 insert_single_paper_data 所需 data 结构。"""
+    file_stem = Path(filename).stem if filename else "untitled"
+    title = _extract_markdown_title(markdown_text, file_stem)
+    return {
+        "title": title,
+        "authors": [],
+        "abstract": "",
+        "keywords": [],
+        "conclusion": "",
+        "original_text": markdown_text,
+    }
+
+
+def _build_plain_text_paper_data(text: str, filename: str, *, title: str = "") -> Dict[str, Any]:
+    """将解析后的纯文本封装为 insert_single_paper_data 所需 data 结构。"""
+    file_stem = Path(filename).stem if filename else "untitled"
+    final_title = (title or "").strip() or file_stem
+    return {
+        "title": final_title,
+        "authors": [],
+        "abstract": "",
+        "keywords": [],
+        "conclusion": "",
+        "original_text": text,
+    }
+
+
 def _build_records_and_chunks(
     *,
     data: Dict[str, Any],
@@ -912,22 +976,7 @@ async def build_index_from_json_contents(
                 continue
 
             # 兼容多种返回结构: {"data": {"id": N}} / {"data": [{"id": N}]} / 对象.data.id
-            doc_id = None
-            if isinstance(created, dict):
-                created_data = created.get("data")
-                if isinstance(created_data, dict):
-                    doc_id = created_data.get("id")
-                elif isinstance(created_data, (list, tuple)) and created_data:
-                    doc_id = created_data[0].get("id") if isinstance(created_data[0], dict) else None
-            elif hasattr(created, "data"):
-                d = getattr(created, "data", None)
-                if isinstance(d, dict):
-                    doc_id = d.get("id")
-                elif isinstance(d, (list, tuple)) and d:
-                    doc_id = d[0].get("id") if isinstance(d[0], dict) else None
-            if doc_id is not None:
-                doc_id = int(doc_id) if isinstance(doc_id, (int, float)) else None
-
+            doc_id = _extract_doc_id_from_create_response(created)
             if not isinstance(doc_id, int):
                 logger.error(
                     f"[build_index_from_json_contents] 无法从 BaseDB 响应提取 doc_id, created={created!r}"
@@ -998,6 +1047,253 @@ async def build_index_from_json_contents(
         f"[build_index_from_json_contents] 全部完成: total_documents={total_documents}, "
         f"total_chunks={total_chunks}, milvus_records={milvus_records}, skipped={len(skipped_files)}"
     )
+    return {
+        "kb_id": kb_id,
+        "total_documents": total_documents,
+        "total_chunks": total_chunks,
+        "milvus_records": milvus_records,
+        "skipped_files": skipped_files,
+    }
+
+
+async def build_index_from_markdown_contents(
+    kb_id: int,
+    items: Sequence[Tuple[str, str]],
+    *,
+    skip_base_db: bool = False,
+) -> Dict[str, Any]:
+    """从上传的 Markdown 内容批量构建索引。"""
+    logger.error(
+        f"[build_index_from_markdown_contents] 开始: kb_id={kb_id}, 文件数={len(items)}, skip_base_db={skip_base_db}"
+    )
+    if not items:
+        return {
+            "kb_id": kb_id,
+            "total_documents": 0,
+            "total_chunks": 0,
+            "milvus_records": 0,
+            "skipped_files": [],
+        }
+
+    _load_db_env()
+    doc_client = _get_document_client()
+
+    tenant_id = int(os.getenv("DB_TENANT_ID", "1"))
+    owner_id = int(os.getenv("DB_OWNER_ID", "1"))
+    security_level = int(os.getenv("DB_SECURITY_LEVEL", "1"))
+    status = os.getenv("DB_DOCUMENT_STATUS", "indexed")
+
+    total_documents = 0
+    total_chunks = 0
+    milvus_records = 0
+    skipped_files: List[str] = []
+
+    for filename, markdown_text in items:
+        source_name = filename or "unknown.md"
+        if not markdown_text.strip():
+            logger.warning(f"[build_index_from_markdown_contents] {source_name} 内容为空，跳过")
+            skipped_files.append(source_name)
+            continue
+
+        paper_data = _build_markdown_paper_data(markdown_text, source_name)
+        title = paper_data.get("title", "")
+        doc_extra: Dict[str, Any] = {
+            "title": title,
+            "tags": [],
+            "authors": [],
+            "institutions": [],
+            "source_file": source_name,
+        }
+
+        document = DocumentModel()
+        document.kb_id = kb_id
+        document.tenant_id = tenant_id
+        document.owner_id = owner_id
+        document.file_name = source_name
+        document.minio_path = f"markdown/{source_name}"
+        document.file_type = "md"
+        document.file_size = len(markdown_text.encode("utf-8"))
+        document.markdown_content = markdown_text
+        document.status = status
+        document.security_level = security_level
+        document.extra = doc_extra
+
+        try:
+            created = await doc_client.create_document(document)
+        except Exception as exc:
+            logger.error(
+                f"[build_index_from_markdown_contents] BaseDB 创建文档失败 {source_name}: {exc}",
+                exc_info=True,
+            )
+            skipped_files.append(source_name)
+            continue
+
+        doc_id = _extract_doc_id_from_create_response(created)
+        if not isinstance(doc_id, int):
+            logger.error(
+                f"[build_index_from_markdown_contents] 无法提取 doc_id: source={source_name}, created={created!r}"
+            )
+            skipped_files.append(source_name)
+            continue
+
+        try:
+            result = await insert_single_paper_data(
+                kb_id=kb_id,
+                doc_id=doc_id,
+                data=paper_data,
+                tenant_id=tenant_id,
+                security_level=security_level,
+                owner_id=owner_id,
+                filename=source_name,
+                skip_base_db=skip_base_db,
+            )
+        except Exception as exc:
+            logger.error(
+                f"[build_index_from_markdown_contents] insert_single_paper_data 异常 {source_name}: {exc}",
+                exc_info=True,
+            )
+            skipped_files.append(source_name)
+            continue
+
+        if not result.get("success"):
+            logger.warning(
+                f"[build_index_from_markdown_contents] 写入失败 {source_name}: {result.get('error', 'unknown')}"
+            )
+            skipped_files.append(source_name)
+            continue
+
+        total_documents += 1
+        chunk_count = int(result.get("chunk_count", 0) or 0)
+        total_chunks += chunk_count
+        milvus_ids = result.get("milvus_ids", []) or []
+        milvus_records += len(milvus_ids)
+
+    return {
+        "kb_id": kb_id,
+        "total_documents": total_documents,
+        "total_chunks": total_chunks,
+        "milvus_records": milvus_records,
+        "skipped_files": skipped_files,
+    }
+
+
+async def build_index_from_parsed_document_contents(
+    kb_id: int,
+    items: Sequence[Dict[str, Any]],
+    *,
+    skip_base_db: bool = False,
+) -> Dict[str, Any]:
+    """从解析后的文档内容批量构建索引。"""
+    logger.error(
+        f"[build_index_from_parsed_document_contents] 开始: kb_id={kb_id}, 文件数={len(items)}, skip_base_db={skip_base_db}"
+    )
+    if not items:
+        return {
+            "kb_id": kb_id,
+            "total_documents": 0,
+            "total_chunks": 0,
+            "milvus_records": 0,
+            "skipped_files": [],
+        }
+
+    _load_db_env()
+    doc_client = _get_document_client()
+
+    tenant_id = int(os.getenv("DB_TENANT_ID", "1"))
+    owner_id = int(os.getenv("DB_OWNER_ID", "1"))
+    security_level = int(os.getenv("DB_SECURITY_LEVEL", "1"))
+    status = os.getenv("DB_DOCUMENT_STATUS", "indexed")
+
+    total_documents = 0
+    total_chunks = 0
+    milvus_records = 0
+    skipped_files: List[str] = []
+
+    for item in items:
+        source_name = str(item.get("filename") or "unknown.bin")
+        parsed_text = str(item.get("content") or "")
+        parsed_title = str(item.get("title") or "")
+        file_type = str(item.get("file_type") or "bin")
+
+        if not parsed_text.strip():
+            logger.warning(f"[build_index_from_parsed_document_contents] {source_name} 解析内容为空，跳过")
+            skipped_files.append(source_name)
+            continue
+
+        paper_data = _build_plain_text_paper_data(parsed_text, source_name, title=parsed_title)
+        title = paper_data.get("title", "")
+        doc_extra: Dict[str, Any] = {
+            "title": title,
+            "tags": [],
+            "authors": [],
+            "institutions": [],
+            "source_file": source_name,
+            "parsed": True,
+        }
+
+        document = DocumentModel()
+        document.kb_id = kb_id
+        document.tenant_id = tenant_id
+        document.owner_id = owner_id
+        document.file_name = source_name
+        document.minio_path = f"documents/{source_name}"
+        document.file_type = file_type
+        document.file_size = len(parsed_text.encode("utf-8"))
+        document.markdown_content = parsed_text
+        document.status = status
+        document.security_level = security_level
+        document.extra = doc_extra
+
+        try:
+            created = await doc_client.create_document(document)
+        except Exception as exc:
+            logger.error(
+                f"[build_index_from_parsed_document_contents] BaseDB 创建文档失败 {source_name}: {exc}",
+                exc_info=True,
+            )
+            skipped_files.append(source_name)
+            continue
+
+        doc_id = _extract_doc_id_from_create_response(created)
+        if not isinstance(doc_id, int):
+            logger.error(
+                f"[build_index_from_parsed_document_contents] 无法提取 doc_id: source={source_name}, created={created!r}"
+            )
+            skipped_files.append(source_name)
+            continue
+
+        try:
+            result = await insert_single_paper_data(
+                kb_id=kb_id,
+                doc_id=doc_id,
+                data=paper_data,
+                tenant_id=tenant_id,
+                security_level=security_level,
+                owner_id=owner_id,
+                filename=source_name,
+                skip_base_db=skip_base_db,
+            )
+        except Exception as exc:
+            logger.error(
+                f"[build_index_from_parsed_document_contents] insert_single_paper_data 异常 {source_name}: {exc}",
+                exc_info=True,
+            )
+            skipped_files.append(source_name)
+            continue
+
+        if not result.get("success"):
+            logger.warning(
+                f"[build_index_from_parsed_document_contents] 写入失败 {source_name}: {result.get('error', 'unknown')}"
+            )
+            skipped_files.append(source_name)
+            continue
+
+        total_documents += 1
+        chunk_count = int(result.get("chunk_count", 0) or 0)
+        total_chunks += chunk_count
+        milvus_ids = result.get("milvus_ids", []) or []
+        milvus_records += len(milvus_ids)
+
     return {
         "kb_id": kb_id,
         "total_documents": total_documents,

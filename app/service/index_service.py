@@ -492,7 +492,13 @@ def _extract_chunk_ids_from_batch_response(
     if created is None or not records:
         logger.debug("[_extract_chunk_ids] created 为空或 records 为空")
         return []
-    items = created if isinstance(created, (list, tuple)) else getattr(created, "data", None) or getattr(created, "items", None) or []
+    # dict 用 .get() 取键，避免 getattr(dict, "items") 误取到 dict.items 方法
+    if isinstance(created, (list, tuple)):
+        items = created
+    elif isinstance(created, dict):
+        items = created.get("data") or created.get("items") or []
+    else:
+        items = getattr(created, "data", None) or []
     if not isinstance(items, (list, tuple)):
         logger.warning(f"[_extract_chunk_ids] created 的 data/items 不是列表: type={type(items).__name__}")
         return []

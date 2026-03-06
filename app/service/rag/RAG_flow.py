@@ -11,6 +11,11 @@ import json
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+import asyncio
+import concurrent.futures
+import threading
+import re
+from collections import defaultdict
 import requests
 
 # 导入项目的retrieval_service模块
@@ -125,6 +130,163 @@ class RAGFlow:
         # 最多允许的 query 改写轮数
         self.max_rewrite_rounds = 2
 
+        # 证据扩展配置：仅对 Top-N chunk 拉取 parent_content（你已选择 Top5）
+        self.evidence_expand_top_n = 5
+        # 每条证据传入 LLM 前的最大字符数（保守：宁可略长也不截断关键数字/条件）
+        self.max_evidence_chars = 8000
+        # 文档级多样性：默认覆盖最多多少篇不同文档进入 TopK（软约束）
+        self.diversity_target_docs = 5
+        # 文档级多样性：每篇文档最多贡献多少条 chunk（会自适应放宽/收紧）
+        self.diversity_per_doc_cap_default = 3
+
+    @staticmethod
+    def _safe_to_int(val: Any) -> Optional[int]:
+        try:
+            if val is None:
+                return None
+            if isinstance(val, bool):
+                return None
+            if isinstance(val, int):
+                return val
+            s = str(val).strip()
+            if not s:
+                return None
+            return int(float(s)) if re.fullmatch(r"-?\d+(\.0+)?", s) else int(s)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _truncate_text_keep_head_tail(text: str, max_chars: int) -> str:
+        if not text:
+            return ""
+        if max_chars <= 0:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        # 保守裁剪：保留开头和结尾，尽量不丢失结论/数值（常在段尾）
+        head = int(max_chars * 0.6)
+        tail = max_chars - head
+        return text[:head] + "\n...\n" + text[-tail:]
+
+    @staticmethod
+    def _run_coro_sync(coro, timeout_s: float = 6.0) -> Any:
+        """
+        在同步流程中安全执行 async coroutine：
+        - 若当前无线程事件循环：asyncio.run
+        - 若已在事件循环中：新线程 asyncio.run，避免 RuntimeError
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                return asyncio.run(coro)
+            except Exception:
+                return None
+
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _runner():
+            try:
+                res = asyncio.run(coro)
+                fut.set_result(res)
+            except Exception as e:
+                fut.set_exception(e)
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        try:
+            return fut.result(timeout=timeout_s)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_html_table(text: str) -> bool:
+        if not text:
+            return False
+        t = text.lower()
+        # 需要 table + 行/单元格信号同时出现，避免误判
+        has_table = "<table" in t and "</table" in t
+        has_row_cell = ("<tr" in t) and (("<td" in t) or ("<th" in t))
+        return bool(has_table and has_row_cell)
+
+    @staticmethod
+    def _is_markdown_table(text: str) -> bool:
+        if not text:
+            return False
+        lines = [ln.rstrip("\n") for ln in str(text).splitlines()]
+        # 过滤掉过短/空行，减少误判
+        cleaned = [ln.strip() for ln in lines if ln.strip()]
+        if len(cleaned) < 2:
+            return False
+
+        # 分隔线：| --- | 或 ---|--- 等
+        sep_re_1 = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+        for i in range(len(cleaned) - 1):
+            header = cleaned[i]
+            sep = cleaned[i + 1]
+            # header 至少有两列（两个分隔符），且 sep 行满足表格分隔线
+            if header.count("|") >= 2 and sep_re_1.match(sep):
+                return True
+        return False
+
+    def _detect_table_kind(self, text: str) -> Optional[str]:
+        if self._is_html_table(text):
+            return "html"
+        if self._is_markdown_table(text):
+            return "markdown"
+        return None
+
+    def _get_parent_content_sync(self, chunk_id: Any) -> str:
+        cid = self._safe_to_int(chunk_id)
+        if cid is None:
+            return ""
+        try:
+            res = self._run_coro_sync(retrieval_service.get_parent_content_by_chunk_id(cid))
+            return str(res or "").strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _get_chunk_index_from_result(result: Any) -> Optional[int]:
+        # 兼容：属性 chunk_index / chunk_order / metadata['chunk_index']
+        for attr in ("chunk_index", "chunk_order"):
+            v = getattr(result, attr, None)
+            if v is not None:
+                try:
+                    return int(v)
+                except Exception:
+                    pass
+        meta = getattr(result, "metadata", None) or getattr(result, "meta", None)
+        if isinstance(meta, dict):
+            for k in ("chunk_index", "chunk_order"):
+                if k in meta and meta[k] is not None:
+                    try:
+                        return int(meta[k])
+                    except Exception:
+                        pass
+        return None
+
+    def _expand_evidence_with_neighbors(
+        self,
+        *,
+        base_content: str,
+        doc_key: str,
+        chunk_index: Optional[int],
+        neighbor_text_by_doc_and_index: Dict[str, Dict[int, str]],
+    ) -> str:
+        if not base_content:
+            return ""
+        if chunk_index is None:
+            return base_content
+
+        nb_map = neighbor_text_by_doc_and_index.get(doc_key) or {}
+        parts = [base_content]
+        for d in (-1, 1):
+            nb = nb_map.get(chunk_index + d)
+            if nb and nb.strip() and nb.strip() not in base_content:
+                parts.append(nb)
+        return "\n\n".join(parts)
+
     def _estimate_rewrite_difference(self, original_query: str, rewritten_query: str) -> Dict[str, float]:
         """
         粗略估计改写前后差异度：
@@ -202,11 +364,14 @@ class RAGFlow:
         兼容多种字段命名方式。
         """
         doc_id = getattr(result, "doc_id", None)
+        # RetrieverService 的结果通常为 document_id
+        doc_id = doc_id if doc_id is not None else getattr(result, "document_id", None)
         doc_title = getattr(result, "doc_title", None) or getattr(result, "title", None)
 
         metadata = getattr(result, "metadata", None) or getattr(result, "meta", None)
         if isinstance(metadata, dict):
             doc_id = doc_id or metadata.get("doc_id") or metadata.get("paper_id")
+            doc_id = doc_id or metadata.get("document_id")
             doc_title = doc_title or metadata.get("doc_title") or metadata.get("title")
 
         return {"doc_id": doc_id, "doc_title": doc_title}
@@ -372,34 +537,75 @@ class RAGFlow:
                 return [], retrieval_record
             return []
 
-    def summarize_single_chunk(self, chunk_content: str) -> str:
+    def summarize_single_chunk(self, chunk_content: str, query: Optional[str] = None) -> str:
         """
-        对单个chunk进行summary，特别优化表格处理
+        对单个 chunk 进行“保守的证据抽取（extractive）”，特别优化表格处理。
+        原则：宁可多保留，也不要遗漏关键数值/条件/否定/限定语，否则会影响后续流程。
         """
         try:
-            # 检测是否包含表格内容
-            if '<table>' in chunk_content.lower() or '|' in chunk_content:
-                # 表格内容使用专门的prompt
+            table_kind = self._detect_table_kind(chunk_content)
+            q = (query or "").strip()
+
+            if table_kind is not None:
                 messages = [
                     {
                         "role": "system",
-                        "content": "你是一个专业的学术内容总结助手，特别擅长处理表格数据。请严格遵循以下要求：\n1. 如果内容包含表格，优先提取表格中的关键数据和趋势\n2. 用简洁的文字描述表格的主要发现和数据模式\n3. 突出重要的数值对比和结论\n4. 保持总结准确、简洁，避免冗长描述\n5. 如果是实验结果表格，重点说明方法间的性能对比"
+                        "content": (
+                            "你是一个学术证据抽取助手，必须非常保守，避免任何信息丢失。"
+                            "现在给你一段论文文本（包含表格或表格化内容）与可选的用户问题，请做“证据抽取”，不是泛化总结。\n\n"
+                            "硬性要求（必须遵守）：\n"
+                            "1) 必须保留所有关键数值、单位、比例、比较方向（↑/↓）、显著性、范围、条件、否定词（不/无/未/不能/仅）。\n"
+                            "2) 不得改写或推测数值；不得合并掉列名/行名；不得把‘最好/最高’等结论写成原文未明确的形式。\n"
+                            "3) 如问题涉及某指标/方法/数据集/设置，优先抽取与之直接相关的行/列；但不确定时宁可多抽取，不要遗漏。\n"
+                            "4) 输出应尽量“原文摘录/近原文”，可做轻微整理，但不能丢细节。\n\n"
+                            "输出格式（只输出下列结构，不要额外解释）：\n"
+                            "【与问题直接相关的表格证据】\n"
+                            "- ...（逐条列出，尽量保留原表述与数值）\n"
+                            "【必要的上下文/条件】\n"
+                            "- ...\n"
+                            "【可能的答案线索（如有）】\n"
+                            "- ...\n"
+                        ),
                     },
                     {
                         "role": "user",
-                        "content": f"请总结以下包含表格的学术内容：\n{chunk_content}\n\n表格总结："
+                        "content": (
+                            f"用户问题（可选）：{q if q else '（无）'}\n\n"
+                            f"论文片段（可能包含表格，表格类型={table_kind}）：\n{chunk_content}\n\n"
+                            "请按要求输出证据抽取结果："
+                        ),
                     }
                 ]
             else:
-                # 普通内容使用原有prompt
                 messages = [
                     {
                         "role": "system",
-                        "content": "你是一个专业的学术内容总结助手。请严格遵循以下要求：\n1. 阅读以下学术论文片段，提取核心信息和关键论点\n2. 总结必须准确、简洁，保留所有重要的学术观点和事实\n3. 不添加任何原文中没有的信息或个人解读\n4. 使用清晰的语言结构，突出重点内容\n5. 保持总结长度适中，避免过于冗长或过于简略\n6. 如果内容是论文摘要，保留其主要结构和核心结论"
+                        "content": (
+                            "你是一个学术证据抽取助手，必须非常保守，避免任何信息丢失。"
+                            "现在给你一段论文文本与可选的用户问题，请做“证据抽取”，不是泛化总结。\n\n"
+                            "硬性要求（必须遵守）：\n"
+                            "1) 必须保留关键事实、关键定义、关键结论及其限定条件；尤其要保留所有数值、单位、阈值、比较对象、否定词（不/无/未/不能/仅）。\n"
+                            "2) 不得添加原文没有的信息；不允许推测；不允许把不确定内容写成确定结论。\n"
+                            "3) 尽量使用原文句子或近原文摘录；必要时可分条列出，但不要遗漏。\n"
+                            "4) 若问题涉及具体字段（如年份/参数大小/压缩比/数据量/指标），优先抽取包含这些字段的原句。\n\n"
+                            "输出格式（只输出下列结构，不要额外解释）：\n"
+                            "【与问题直接相关的证据摘录】\n"
+                            "- ...\n"
+                            "【关键数值与单位（逐条列出）】\n"
+                            "- ...\n"
+                            "【必要的上下文/条件】\n"
+                            "- ...\n"
+                            "【可能的答案线索（如有）】\n"
+                            "- ...\n"
+                        ),
                     },
                     {
                         "role": "user",
-                        "content": f"请总结以下学术内容：\n{chunk_content}\n\n总结："
+                        "content": (
+                            f"用户问题（可选）：{q if q else '（无）'}\n\n"
+                            f"论文片段：\n{chunk_content}\n\n"
+                            "请按要求输出证据抽取结果："
+                        ),
                     }
                 ]
             summary = self.deepseek.chat_completion(messages)
@@ -409,6 +615,74 @@ class RAGFlow:
         except Exception as e:
             logger.error(f"单个chunk summary失败: {str(e)}")
             return chunk_content.strip()
+
+    def _select_results_with_doc_diversity(self, sorted_results: List[Any], target_k: int) -> List[Any]:
+        """
+        文档级多样性软约束选择：
+        - 优先覆盖更多文档（最多 diversity_target_docs 篇）
+        - 然后按分数填充，同时施加 per-doc cap（自适应）
+        """
+        if not sorted_results or target_k <= 0:
+            return []
+
+        # 统计文档分布
+        doc_keys: List[str] = []
+        for r in sorted_results:
+            info = self._extract_doc_info_from_result(r)
+            doc_id = info.get("doc_id")
+            doc_title = info.get("doc_title")
+            key = str(doc_id) if doc_id is not None and str(doc_id).strip() else (str(doc_title).strip() if doc_title else "")
+            doc_keys.append(key or "__unknown_doc__")
+        unique_docs = len(set(doc_keys))
+
+        # per-doc cap 自适应：文档越多，cap 越小；文档很少时放宽
+        if unique_docs >= target_k:
+            per_doc_cap = 1
+        elif unique_docs >= max(2, target_k // 2):
+            per_doc_cap = 2
+        else:
+            per_doc_cap = self.diversity_per_doc_cap_default
+        per_doc_cap = max(1, int(per_doc_cap))
+
+        coverage_target = min(target_k, min(unique_docs, max(2, int(self.diversity_target_docs))))
+
+        selected: List[Any] = []
+        per_doc_count: Dict[str, int] = defaultdict(int)
+        covered_docs: set[str] = set()
+
+        # Pass 1：覆盖优先（每 doc 先取 1 条），直到 coverage_target 或 target_k
+        for r, dk in zip(sorted_results, doc_keys):
+            if len(selected) >= target_k:
+                break
+            if dk in covered_docs:
+                continue
+            selected.append(r)
+            per_doc_count[dk] += 1
+            covered_docs.add(dk)
+            if len(covered_docs) >= coverage_target:
+                break
+
+        # Pass 2：按分数填充，但限制每 doc cap
+        for r, dk in zip(sorted_results, doc_keys):
+            if len(selected) >= target_k:
+                break
+            if r in selected:
+                continue
+            if per_doc_count[dk] >= per_doc_cap:
+                continue
+            selected.append(r)
+            per_doc_count[dk] += 1
+
+        # Pass 3：若仍不足（例如大量 unknown doc），放宽 cap 继续填充
+        if len(selected) < target_k:
+            for r in sorted_results:
+                if len(selected) >= target_k:
+                    break
+                if r in selected:
+                    continue
+                selected.append(r)
+
+        return selected[:target_k]
 
     def summarize_and_aggregate(self, query: str, results: List[Any]) -> str:
         """
@@ -445,11 +719,26 @@ class RAGFlow:
             sorted_results = results
 
         # 2. 过滤（限制处理的chunk数量以提高性能，取前10个最相关的chunk）
-        filtered_results = sorted_results[:10]  # 减少处理的数量，提高性能
+        # 在截断前加入文档级多样性控制，避免单篇文档霸榜影响多论文推理
+        filtered_results = self._select_results_with_doc_diversity(sorted_results, target_k=10)
         logger.info(f"过滤后结果数: {len(filtered_results)}")
         _print_info(f"过滤后结果数: {len(filtered_results)}")
 
-        # 3. 对每个chunk单独进行summary，避免上下文过长
+        # 构建邻接 chunk 映射（仅利用已检索到的内容），用于“答案跨 chunk”时的邻接扩展
+        neighbor_text_by_doc_and_index: Dict[str, Dict[int, str]] = defaultdict(dict)
+        for r in sorted_results[: min(len(sorted_results), 40)]:
+            info = self._extract_doc_info_from_result(r)
+            doc_id = info.get("doc_id")
+            doc_title = info.get("doc_title")
+            doc_key = str(doc_id) if doc_id is not None and str(doc_id).strip() else (str(doc_title).strip() if doc_title else "")
+            doc_key = doc_key or "__unknown_doc__"
+            idx = self._get_chunk_index_from_result(r)
+            content = getattr(r, "content", "") or ""
+            if idx is not None and content:
+                # 保留较短的版本用于邻接补全，避免拼接过长
+                neighbor_text_by_doc_and_index[doc_key][idx] = content[:4000]
+
+        # 3. 对每个chunk单独进行保守证据抽取，并进行证据扩展（Top5 拉 parent_content）
         chunk_summaries = []
         for i, result in enumerate(filtered_results):
             try:
@@ -458,8 +747,33 @@ class RAGFlow:
                 if content:
                     logger.info(f"正在处理第{i + 1}个chunk，分数: {score:.3f}")
                     _print_info(f"处理第{i + 1}个chunk，分数: {score:.3f}...")
-                    # 对单个chunk进行summary
-                    chunk_summary = self.summarize_single_chunk(content)
+                    # 证据扩展：TopN 拉 parent_content（更大上下文）；同时用已检索结果做邻接补全
+                    chunk_id = getattr(result, "chunk_id", None)
+                    info = self._extract_doc_info_from_result(result)
+                    doc_id = info.get("doc_id")
+                    doc_title = info.get("doc_title")
+                    doc_key = str(doc_id) if doc_id is not None and str(doc_id).strip() else (str(doc_title).strip() if doc_title else "")
+                    doc_key = doc_key or "__unknown_doc__"
+                    chunk_index = self._get_chunk_index_from_result(result)
+
+                    expanded_from_neighbors = self._expand_evidence_with_neighbors(
+                        base_content=str(content),
+                        doc_key=doc_key,
+                        chunk_index=chunk_index,
+                        neighbor_text_by_doc_and_index=neighbor_text_by_doc_and_index,
+                    )
+
+                    parent_content = ""
+                    if i < int(self.evidence_expand_top_n):
+                        parent_content = self._get_parent_content_sync(chunk_id)
+
+                    expanded_content = parent_content.strip() if parent_content and parent_content.strip() else expanded_from_neighbors
+                    expanded_content = self._truncate_text_keep_head_tail(
+                        expanded_content, max_chars=int(self.max_evidence_chars)
+                    )
+
+                    # 对单个chunk进行保守证据抽取（带 query）
+                    chunk_summary = self.summarize_single_chunk(expanded_content, query=query)
                     if chunk_summary:
                         chunk_summaries.append(f"[结果{i + 1} 相关性分数: {score:.3f}]\n{chunk_summary}\n")
             except Exception as e:
@@ -538,7 +852,7 @@ class RAGFlow:
             logger.info(f"注意：信息较短 ({len(fused_info)} 字符)，但仍进行语义判断")
             _print_info(f"注意：信息较短 ({len(fused_info)} 字符)，但仍进行语义判断")
 
-        # 使用LLM进行智能语义判断
+        # 使用LLM进行智能语义判断（保守策略：异常/不合规 -> 不足）
         try:
             messages = [
                 {
@@ -555,30 +869,71 @@ class RAGFlow:
 
             if judgment:
                 # 清理和标准化返回结果
-                judgment = judgment.strip().lower()
+                judgment = judgment.strip().lower().replace(" ", "")
                 logger.info(f"判断结果: {judgment}")
                 _print_info(f"判断结果: {judgment}")
 
-                # 更宽松的结果处理
-                if "足够" in judgment or "sufficient" in judgment:
+                # 保守处理：仅明确包含关键字才通过
+                if judgment in ("足够", "sufficient") or ("足够" in judgment and "不足" not in judgment):
                     return True
-                elif "不足" in judgment or "insufficient" in judgment:
+                if judgment in ("不足", "insufficient") or ("不足" in judgment and "足够" not in judgment):
                     return False
-                else:
-                    # 如果返回格式不符合要求，默认认为信息足够，尝试生成响应
-                    logger.warning("返回格式异常，默认认为信息足够")
-                    _print_warning("返回格式异常，默认认为信息足够")
-                    return True
-            else:
-                logger.warning("LLM判断失败，默认认为信息足够，尝试生成响应")
-                _print_warning("LLM判断失败，默认认为信息足够，尝试生成响应")
-                # API调用失败时，默认认为信息足够，不中断流程
-                return True
+                logger.warning("Judge返回不合规，按不足处理")
+                _print_warning("Judge返回不合规，按不足处理")
+                return False
+
+            logger.warning("Judge调用失败或返回为空，按不足处理")
+            _print_warning("Judge调用失败或返回为空，按不足处理")
+            return False
         except Exception as e:
             logger.error(f"判断环节出错: {str(e)}")
             _print_warning(f"判断环节出错: {str(e)}")
-            # 出错时默认认为信息足够，不中断流程
-            return True
+            # 出错时保守：认为信息不足
+            return False
+
+    def generate_response_with_uncertainty(self, query: str, fused_info: str) -> str:
+        """
+        信息不足时的“尽力回答但明确不确定性”策略：不强行下确定结论，优先给出基于证据的可能答案与待确认点。
+        """
+        logger.info(f"开始生成不确定性响应，查询: {query}")
+        _print_info("\n=== 生成不确定性响应 ===")
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个严谨的学术问答助手。现在给出用户问题与若干证据抽取结果，但信息可能不足。"
+                    "请遵循：\n"
+                    "1) 必须先明确声明：信息可能不足，以下为基于现有证据的尽力分析。\n"
+                    "2) 只使用提供的证据，不得编造；不确定的地方必须标注“尚不确定/需更多证据”。\n"
+                    "3) 如果能给出可能答案，请以“可能/倾向于/根据现有证据”表述；并列出支持该判断的证据要点。\n"
+                    "4) 若无法形成任何合理答案，直接说明无法回答，并指出缺少哪类信息。\n"
+                    "5) 输出简洁、结构清晰。\n\n"
+                    "输出格式：\n"
+                    "【不确定性声明】...\n"
+                    "【基于现有证据的可能答案】...\n"
+                    "【支持证据要点】\n"
+                    "- ...\n"
+                    "【仍需补充/检索的关键信息】\n"
+                    "- ...\n"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"查询: {query}\n\n现有证据抽取结果:\n{fused_info}\n\n请按要求输出：",
+            },
+        ]
+
+        response = self.deepseek.chat_completion(messages)
+        if response and response.strip():
+            logger.info(f"不确定性响应生成成功，响应长度: {len(response)} 字符")
+            _print_info("不确定性响应:")
+            _print_info(response)
+            return response.strip()
+
+        logger.error("不确定性响应生成失败，返回保守兜底")
+        _print_warning("不确定性响应生成失败，返回保守兜底")
+        return "信息可能不足，无法基于现有证据给出可靠答案。建议扩大检索范围或提供更多上下文。"
 
     def generate_response(self, query: str, fused_info: str) -> str:
         """
@@ -766,7 +1121,8 @@ class RAGFlow:
                     # 达到最大改写轮数或最大迭代次数，使用当前信息生成尽力回答
                     logger.info("已达到最大迭代次数或查询改写次数，基于当前信息生成最终响应")
                     _print_warning("已达到最大迭代次数或查询改写次数，基于当前信息生成最终响应")
-                    final_response = self.generate_response(current_query, fused_info)
+                    # 保守策略：信息不足时不强行给确定结论，改为“不确定性尽力回答”
+                    final_response = self.generate_response_with_uncertainty(current_query, fused_info)
                     break
 
         # 确保无论如何都有最终响应

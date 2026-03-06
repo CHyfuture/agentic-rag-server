@@ -7,7 +7,6 @@ RAG系统综合测试脚本 - 修正版
 """
 
 import sys
-import os
 import json
 import time
 import logging
@@ -163,6 +162,15 @@ class CorrectedRAGEvaluator:
         metrics = self.calculate_evaluation_metrics(case, rag_response, execution_time, trace)
 
         # 构建详细结果（字段名中文化，保留指定英文键）
+        paper_titles: List[str] = []
+        for doc in case.get('relevant_documents', []) or []:
+            title = doc.get('doc_title')
+            if not title:
+                continue
+            title_str = str(title).strip()
+            if title_str and title_str not in paper_titles:
+                paper_titles.append(title_str)
+
         result: Dict[str, Any] = {
             'sample_id': case['sample_id'],
             'query': case['query'],
@@ -170,6 +178,7 @@ class CorrectedRAGEvaluator:
             'level': case['level'],
             '标准答案': case['ground_truth_answer'],
             '系统回答': rag_response,
+            '论文题目': paper_titles,
             '耗时': execution_time,
             '评估指标': metrics,
             'RAG流程详情': trace,
@@ -362,14 +371,16 @@ class CorrectedRAGEvaluator:
 
     def calculate_evaluation_metrics(self, case: Dict, response: str, exec_time: float, trace: Dict) -> Dict:
         """计算完整的评估指标（对齐图片中的指标体系）"""
-        ground_truth_raw = str(case['ground_truth_answer'])
-        response_raw = str(response)
-        ground_truth = ground_truth_raw.lower().strip()
-        rag_answer = response_raw.lower().strip()
+        ground_truth_raw = str(case.get('ground_truth_answer', ''))
+        response_raw = str(response or '')
 
-        # 1. 基础准确率与 EM（EM 与「答案是否正确」一致：匹配=1，不匹配=0）
-        auto_correct = self.check_accuracy(ground_truth, rag_answer)
-        em_score = 1 if auto_correct else 0
+        # 1. 基础准确率（用于生成阶段的自动判定）
+        # 使用 LLM 语义判定提升准确率（每个 sample 仅调用一次）；失败则回退规则判定。
+        auto_correct = self._judge_answer_correct_with_llm(case, ground_truth_raw, response_raw)
+        if auto_correct is None:
+            ground_truth = ground_truth_raw.lower().strip()
+            rag_answer = response_raw.lower().strip()
+            auto_correct = self.check_accuracy(ground_truth, rag_answer)
 
         # 2. chunk 级检索指标（召回率 / 精确率 / F1 / Hit@K / MRR）
         gt_chunks = self._build_gt_chunks(case)
@@ -442,7 +453,6 @@ class CorrectedRAGEvaluator:
         metrics.update(
             {
                 "答案是否正确": auto_correct,
-                "EM": em_score,
                 "MultiHopScore": round(multihop_score, 3),
                 "MultiHop_R": round(multihop_R, 3),
                 "MultiHop_E": round(multihop_E, 3),
@@ -455,25 +465,6 @@ class CorrectedRAGEvaluator:
             }
         )
         return metrics
-
-    def _compute_em(self, truth: str, response: str) -> int:
-        """
-        严格的 EM（Exact Match）指标：
-        - 预处理后完全一致记为 1，否则 0。
-        """
-        def _normalize(s: str) -> str:
-            import re
-
-            s = s.strip().lower()
-            # 全角转半角的简单处理
-            s = s.replace("％", "%").replace("×", "x")
-            # 去掉常见标点和空白
-            s = re.sub(r"[，,。．\.！？!?\s]", "", s)
-            return s
-
-        if not truth or not response:
-            return 0
-        return 1 if _normalize(truth) == _normalize(response) else 0
 
     def _llm_score_multihop(self, case: Dict, response: str, evidence: str) -> Dict[str, float]:
         """
@@ -503,8 +494,6 @@ class CorrectedRAGEvaluator:
                 ]
             )
             text = str(decision).strip()
-            import json
-
             scores = json.loads(text)
         except Exception as e:
             logger.error(f"调用DeepSeek进行多跳推理评分失败: {e}")
@@ -555,8 +544,6 @@ class CorrectedRAGEvaluator:
                 ]
             )
             text = str(decision).strip()
-            import json
-
             scores = json.loads(text)
         except Exception as e:
             logger.error(f"调用DeepSeek进行多论文推理评分失败: {e}")
@@ -578,6 +565,58 @@ class CorrectedRAGEvaluator:
             "E": _clamp(scores.get("E", 0.0)),
             "A": _clamp(scores.get("A", 0.0)),
         }
+
+    def _judge_answer_correct_with_llm(self, case: Dict, ground_truth: str, response: str) -> Any:
+        """
+        使用 LLM 对问答匹配率进行语义判定（每个 sample 仅调用一次）。
+
+        返回：True / False；若调用失败返回 None（上层回退到规则判定）。
+        """
+        system_prompt = (
+            "你是一个严格但公平的学术问答评估助手。"
+            "现在给出【问题】、【标准答案】、【系统回答】。你需要判断系统回答是否“正确”。\n\n"
+            "判定标准（务必遵守）：\n"
+            "1) 语义一致即可判为【正确】：关键事实/结论一致；数值等价（如 103k=103,000）、"
+            "单位/表述形式不同不影响；允许同义改写、语序调整、补充少量背景。\n"
+            "2) 只要存在关键事实错误、关键数值明显不符、把论文/方法/结论张冠李戴、或答非所问，应判为【错误】。\n"
+            "3) 不要过度宽松：如果你无法确定二者语义一致，必须判【错误】。\n"
+            "4) 对“无答案/信息不足”类：若标准答案表达无法从材料回答/信息不足，且系统回答也明确表达无法回答/信息不足，判【正确】；"
+            "否则按上述标准判。\n\n"
+            "输出要求：只输出两个字之一：正确 或 错误。不要输出解释、标点或其他内容。"
+        )
+        user_prompt = (
+            f"问题：{case.get('query', '')}\n"
+            f"标准答案：{ground_truth}\n"
+            f"系统回答：{response}\n\n"
+            "请只输出：正确 或 错误"
+        )
+
+        try:
+            decision = self.rag_flow.deepseek.chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+        except Exception as e:
+            logger.error(f"调用DeepSeek进行问答匹配判定失败: {e}")
+            return None
+
+        if decision is None:
+            return None
+
+        text = str(decision).strip().replace(" ", "").replace("\n", "")
+        if text == "正确":
+            return True
+        if text == "错误":
+            return False
+
+        # 容错：如果模型不按要求输出，仅做保守解析（含糊则当失败，交由上层回退）
+        if "正确" in text and "错误" not in text:
+            return True
+        if "错误" in text and "正确" not in text:
+            return False
+        return None
 
     def check_accuracy(self, truth: str, response: str) -> bool:
         """检查回答准确性"""
@@ -613,66 +652,6 @@ class CorrectedRAGEvaluator:
 
         return False
 
-    def assess_completeness(self, query: str, truth: str, response: str) -> float:
-        """
-        评估答案在“文本层面”的完整性 (0-1)，只考虑数值与单位覆盖度。
-        最终答案完整性会在 calculate_evaluation_metrics 中叠加 chunk 召回率。
-        """
-        import re
-
-        # 基础分：回答非空
-        if not response.strip():
-            return 0.0
-        score = 0.3
-
-        # 数值覆盖：标准答案与回答中至少有一个共同数字
-        truth_nums = re.findall(r'\d+\.?\d*', truth)
-        resp_nums = re.findall(r'\d+\.?\d*', response)
-        common_nums = set(truth_nums) & set(resp_nums)
-        if truth_nums and resp_nums and common_nums:
-            score += 0.4
-
-        # 单位覆盖：至少一个共同单位
-        units = ['倍', '百分点', '%', '张', '次', '层', 'epoch', 'MB', 'kb', 'k']
-        if any(u in truth and u in response for u in units):
-            score += 0.3
-
-        return min(1.0, score)
-
-    def check_consistency(self, truth: str, response: str) -> float:
-        """
-        检查数值层面的事实一致性 Sn (0-1)：
-        - 无数字 → 视为 1.0
-        - 有数字 → 统计标准答案中的数字，在回答中能找到相对误差≤20%的匹配比例。
-        """
-        import re
-        truth_nums = re.findall(r'\d+\.?\d*', truth)
-        response_nums = re.findall(r'\d+\.?\d*', response)
-
-        if not truth_nums:
-            return 1.0
-        if not response_nums:
-            return 0.0
-
-        matched = 0
-        for t in truth_nums:
-            t_val = float(t)
-            local_match = False
-            for r in response_nums:
-                r_val = float(r)
-                if max(t_val, r_val) == 0:
-                    if t_val == r_val:
-                        local_match = True
-                        break
-                else:
-                    if abs(t_val - r_val) / max(t_val, r_val) <= 0.2:
-                        local_match = True
-                        break
-            if local_match:
-                matched += 1
-
-        return matched / len(truth_nums) if truth_nums else 1.0
-
     def generate_comprehensive_report(self):
         """生成综合评估报告"""
         # 统计汇总
@@ -686,15 +665,18 @@ class CorrectedRAGEvaluator:
         auto_correct = len([r for r in valid_results if r.get('评估指标', {}).get('答案是否正确')])
 
         # 计算平均指标
-        def _avg(key: str) -> float:
+        def _avg(key: str, _results: List[Dict[str, Any]]) -> float:
             values = [
                 r['评估指标'][key]
-                for r in valid_results
+                for r in _results
                 if '评估指标' in r and key in r['评估指标']
             ]
             if not values:
                 return 0.0
             return round(sum(values) / len(values), 3)
+
+        # 无答案型：chunk 与检索相关指标无意义，整体平均指标计算时应排除
+        results_with_chunk_metrics = [r for r in valid_results if r.get('query_type') != '无答案型']
 
         # 平均 MultiHopScore：仅多跳推理型
         multihop_results = [r for r in valid_results if r.get('query_type') == '多跳推理型']
@@ -717,12 +699,11 @@ class CorrectedRAGEvaluator:
             avg_multidoc = 0.0
 
         avg_metrics = {
-            '平均chunk召回率': _avg('chunk召回率'),
-            '平均chunk精确率': _avg('chunk精确率'),
-            '平均chunkF1': _avg('chunkF1'),
-            '平均Hit@K': _avg('Hit@K'),
-            '平均MRR': _avg('MRR'),
-            '平均EM': _avg('EM'),
+            '平均chunk召回率': _avg('chunk召回率', results_with_chunk_metrics),
+            '平均chunk精确率': _avg('chunk精确率', results_with_chunk_metrics),
+            '平均chunkF1': _avg('chunkF1', results_with_chunk_metrics),
+            '平均Hit@K': _avg('Hit@K', results_with_chunk_metrics),
+            '平均MRR': _avg('MRR', results_with_chunk_metrics),
             '平均MultiHopScore': avg_multihop,
             '平均MultiHopScore说明': '仅多跳推理型',
             '平均MultiDocScore': avg_multidoc,
@@ -826,7 +807,6 @@ class CorrectedRAGEvaluator:
             "平均chunkF1",
             "平均Hit@K",
             "平均MRR",
-            "平均EM",
             "平均MultiHopScore",
             "平均MultiDocScore",
             "平均响应时间",
@@ -847,7 +827,7 @@ class CorrectedRAGEvaluator:
             html_parts.append(
                 "<tr><th>问题类型</th><th>数量</th><th>自动判定的问答匹配率</th>"
                 "<th>平均chunk召回率</th><th>平均chunk精确率</th><th>平均chunkF1</th>"
-                "<th>平均EM</th><th>平均MRR</th><th>平均Hit@K</th>"
+                "<th>平均MRR</th><th>平均Hit@K</th>"
                 "<th>平均MultiHopScore</th><th>平均MultiDocScore</th><th>平均耗时</th></tr>"
             )
             for qtype, stats in type_stats.items():
@@ -859,7 +839,6 @@ class CorrectedRAGEvaluator:
                     f"<td>{esc(stats.get('平均chunk召回率', ''))}</td>"
                     f"<td>{esc(stats.get('平均chunk精确率', ''))}</td>"
                     f"<td>{esc(stats.get('平均chunkF1', ''))}</td>"
-                    f"<td>{esc(stats.get('平均EM', ''))}</td>"
                     f"<td>{esc(stats.get('平均MRR', ''))}</td>"
                     f"<td>{esc(stats.get('平均Hit@K', ''))}</td>"
                     f"<td>{esc(stats.get('平均MultiHopScore', ''))}</td>"
@@ -892,6 +871,10 @@ class CorrectedRAGEvaluator:
             html_parts.append(f"<tr><td>level</td><td>{esc(level)}</td></tr>")
             html_parts.append(f"<tr><td>标准答案</td><td>{esc(item.get('标准答案', ''))}</td></tr>")
             html_parts.append(f"<tr><td>系统回答</td><td>{esc(item.get('系统回答', ''))}</td></tr>")
+            paper_titles = item.get("论文题目", "")
+            if isinstance(paper_titles, list):
+                paper_titles = "；".join([str(x) for x in paper_titles if str(x).strip()])
+            html_parts.append(f"<tr><td>论文题目</td><td>{esc(paper_titles)}</td></tr>")
             html_parts.append(f"<tr><td>耗时(秒)</td><td>{esc(round(item.get('耗时', 0.0), 3))}</td></tr>")
             html_parts.append("</table>")
 
@@ -1034,12 +1017,6 @@ class CorrectedRAGEvaluator:
                     '理想值': '1.0 (100%)',
                     '当前实现': '用于快速自动打标，仍建议人工抽查复核'
                 },
-                'EM': {
-                    '定义': 'Exact Match，严格意义上的答案完全匹配度。',
-                    '计算公式': '对标准答案与系统回答做归一化（大小写、空格、常见标点），若字符串完全一致则记为1，否则为0。',
-                    '理想值': '1.0',
-                    '当前实现': '作为严格的自动 EM 指标，可视作 EM@1'
-                },
                 'MultiHopScore': {
                     '定义': '针对“多跳推理型”问题，评估系统在多步推理任务上的整体表现。',
                     '计算公式': 'MultiHopScore = 0.3*R + 0.3*E + 0.4*A',
@@ -1102,12 +1079,10 @@ class CorrectedRAGEvaluator:
             # 新增指标汇总
             stats.setdefault('Hit@K汇总', 0.0)
             stats.setdefault('MRR汇总', 0.0)
-            stats.setdefault('EM汇总', 0.0)
             stats.setdefault('MultiHopScore汇总', 0.0)
             stats.setdefault('MultiDocScore汇总', 0.0)
             stats['Hit@K汇总'] += metrics.get('Hit@K', 0.0)
             stats['MRR汇总'] += metrics.get('MRR', 0.0)
-            stats['EM汇总'] += metrics.get('EM', 0.0)
             stats['MultiHopScore汇总'] += metrics.get('MultiHopScore', 0.0)
             stats['MultiDocScore汇总'] += metrics.get('MultiDocScore', 0.0)
 
@@ -1121,7 +1096,6 @@ class CorrectedRAGEvaluator:
                 stats['平均chunkF1'] = round(stats['chunkF1汇总'] / count, 3)
                 stats['平均Hit@K'] = round(stats.get('Hit@K汇总', 0.0) / count, 3)
                 stats['平均MRR'] = round(stats.get('MRR汇总', 0.0) / count, 3)
-                stats['平均EM'] = round(stats.get('EM汇总', 0.0) / count, 3)
                 # MultiHopScore 仅多跳推理型有效，其他类型标为「无」
                 if query_type == '多跳推理型':
                     stats['平均MultiHopScore'] = round(stats.get('MultiHopScore汇总', 0.0) / count, 3)
@@ -1138,7 +1112,6 @@ class CorrectedRAGEvaluator:
                     stats['平均chunk召回率'] = '无'
                     stats['平均chunk精确率'] = '无'
                     stats['平均chunkF1'] = '无'
-                    stats['平均EM'] = '无'
                     stats['平均MRR'] = '无'
                     stats['平均Hit@K'] = '无'
             else:
@@ -1151,7 +1124,6 @@ class CorrectedRAGEvaluator:
             stats.pop('chunkF1汇总', None)
             stats.pop('Hit@K汇总', None)
             stats.pop('MRR汇总', None)
-            stats.pop('EM汇总', None)
             stats.pop('MultiHopScore汇总', None)
             stats.pop('MultiDocScore汇总', None)
 
@@ -1175,7 +1147,6 @@ class CorrectedRAGEvaluator:
         print(f"   🔁 平均chunkF1: {metrics['平均chunkF1']}")
         print(f"   🎯 平均Hit@K: {metrics['平均Hit@K']}")
         print(f"   📐 平均MRR: {metrics['平均MRR']}")
-        print(f"   ✅ 平均EM: {metrics['平均EM']}")
         print(f"   💡 平均MultiHopScore: {metrics['平均MultiHopScore']} （{metrics.get('平均MultiHopScore说明', '仅多跳推理型')}）")
         print(f"   📚 平均MultiDocScore: {metrics['平均MultiDocScore']} （{metrics.get('平均MultiDocScore说明', '仅多论文推理型')}）")
         print(f"   ⏱️  平均响应时间: {metrics['平均响应时间']}秒")

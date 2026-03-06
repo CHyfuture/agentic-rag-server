@@ -35,7 +35,7 @@
   },
   {
     "sample_id": "003",
-    "query": "论文《ACAttack：基于多模态响应解耦的自适应跨模态攻击RGB-T跟踪器》中，用于评估攻击性能的两个RGB-T跟踪数据集分别是什么？",
+    "query": "ACAttack中，时空联合攻击损失函数使用的连续帧数是多少？",
     "query_type": "事实型",
     "level": "简单",
     "domain": "CS",
@@ -44,16 +44,16 @@
         "doc_id": "",
         "doc_title": "ACAttack: Adaptive Cross Attacking RGB-T Tracker via Multi-Modal Response Decoupling (ACAttack：基于多模态响应解耦的自适应跨模态攻击RGB-T跟踪器)",
         "relevant_chunks": [
-          "第4.1.1节中提到：“我们在 RGBT234 [12] 和 LasHeR [13] 数据集上进行实验。”"
+          "第3.3节：“其中 s 表示从视频中提取的连续 s = 5 帧。”"
         ]
       }
     ],
-    "ground_truth_answer": "RGBT234 和 LasHeR"
+    "ground_truth_answer": "5帧"
   },
   {
     "sample_id": "004",
     "query": "在Mona的多认知视觉滤波器中，使用的三个深度可分离卷积的卷积核大小分别是多少？",
-    "query_type": "方法/实验型",
+    "query_type": "事实型",
     "level": "中等",
     "domain": "CS",
     "relevant_documents": [
@@ -69,21 +69,20 @@
   },
   {
     "sample_id": "005",
-    "query": "SlotMIM在COCO+数据集上预训练时，训练了多少个epoch？",
-    "query_type": "方法/实验型",
-    "level": "中等",
+    "query": "在论文《认证的人类轨迹预测》（Certified Human Trajectory Prediction）中，作者在 Trajnet++ 基准上使用的观测时间步数 T_obs 和预测时间步数 T_pred 分别是多少？",
+    "query_type": "事实型",
+    "level": "简单",
     "domain": "CS",
     "relevant_documents": [
       {
         "doc_id": "",
-        "doc_title": "A Data-Centric Revisit of Pre-Trained Vision Models for Robot Learning (面向机器人学习的预训练视觉模型：以数据为中心的再审视)",
+        "doc_title": "Certified Human Trajectory Prediction (认证的人类轨迹预测)",
         "relevant_chunks": [
-          "第4.1节中：“在241K数据规模下，所有方法都训练800个周期。”",
-          "第4.3节消融实验中，“所有模型均在COCO+数据集上训练800个周期。”"
+          "第4节实验部分指出：“我们使用 Trajnet++ [34] 基准测试，它为这些数据集提供了固定的数据划分和统一的预处理。我们使用了常见的输入和输出长度 T_obs = 9 和 T_pred = 12。”"
         ]
       }
     ],
-    "ground_truth_answer": "800个epoch"
+    "ground_truth_answer": "T_obs 为 9，T_pred 为 12"
   },
   {
     "sample_id": "006",
@@ -123,7 +122,7 @@
   },
   {
     "sample_id": "008",
-    "query": "DAM4SAM中，干扰物解析记忆（DRM）的更新需要同时满足哪两个条件？",
+    "query": "在VOT2020和VOT2022基准测试上，DAM4SAM的EAO指标相比SAM2.1分别提升了多少？",
     "query_type": "多跳推理型",
     "level": "中等",
     "domain": "CS",
@@ -132,12 +131,12 @@
         "doc_id": "",
         "doc_title": "A Distractor-Aware Memory for Visual Object Tracking with SAM2 (一种用于视觉目标跟踪的基于SAM2的干扰物感知记忆模型)",
         "relevant_chunks": [
-          "第3.2.2节：“我们提出了一种简单的锚帧检测机制，该机制基于确定输出掩码与替代掩码之间的假设差异。为输出掩码以及输出掩码与替代掩码中最大连通分量的并集分别拟合一个边界框。如果两个边界框的面积之比降至 θ_anc = 0.7 以下，则当前帧被视为更新 DRM 的潜在候选帧。”",
-          "第3.2.2节：“我们仅在足够稳定的跟踪期间触发 DRM 更新，即，如果 SAM2 的预测 IoU 分数超过阈值 θ_IoU = 0.8，并且掩码面积在过去 N_M = 10 帧的中值面积的 θ_area = 0.2 范围内。”"
+          "表3中，SAM2.1的EAO为0.681，DAM4SAM为0.729，提升0.048。",
+          "表4中，SAM2.1的EAO为0.692，DAM4SAM为0.753，提升0.061。"
         ]
       }
     ],
-    "ground_truth_answer": "检测到干扰物（输出掩码与替代掩码的边界框面积比低于0.7）且跟踪足够稳定（预测IoU分数超过0.8且掩码面积稳定）。"
+    "ground_truth_answer": "VOT2020上提升0.048，VOT2022上提升0.061"
   },
   {
     "sample_id": "009",
@@ -156,5 +155,399 @@
       }
     ],
     "ground_truth_answer": "作用是评估参数的重要性（获取重要性分数），需要训练1个epoch。"
-  }
+    },
+    {
+      "sample_id": "010",
+      "query": "在论文《Chapter-Llama：利用大语言模型对小时级视频进行高效章节划分》中，作者指出用于章节划分的每个 LoRA 参数大约占用多大存储空间？",
+      "query_type": "事实型",
+      "level": "简单",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "Chapter-Llama： Efficient Chaptering in Hour-Long Videos with LLMs（Chapter-Llama：利用大语言模型对小时级视频进行高效章节划分）",
+          "relevant_chunks": [
+            "第3.4节“语言模型”部分指出：最终模型同时接收语音和字幕作为输入，其训练独立于仅语音版本，但两者共享相同主干网络，仅LoRA参数不同（每个13MB）。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "每个LoRA参数约13MB"
+    },
+    {
+      "sample_id": "011",
+      "query": "在BACON这个提示方法中，创建了一个名为'上下文常见对象枚举'（ECO）的数据集，其包含多少张图像？",
+      "query_type": "事实型",
+      "level": "简单",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "BACON：通过概念袋图提升图像描述清晰度",
+          "relevant_chunks": [
+            "第3.3节中写道：“使用上述方法，我们创建了一个名为‘上下文常见对象枚举’（ECO）的数据集，该数据集包含103k张图像及对应的BACON风格描述对。”"
+          ]
+        }
+      ],
+      "ground_truth_answer": "103k张图像"
+    },
+    {
+      "sample_id": "012",
+      "query": "在BIMBA模型中，时空令牌选择器是如何初始化视觉查询序列的？默认配置下输入时空令牌数与输出查询数分别为多少，压缩比是多少倍？",
+      "query_type": "方法/实验型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "BIMBA: Selective-Scan Compression for Long-Range Video Question Answering (BIMBA：面向长范围视频问答的选择性扫描压缩)",
+          "relevant_chunks": [
+            "第4.2节描述：首先通过对时空令牌Z应用自适应3D平均池化层来初始化视觉查询序列Q；在实现中，输入包含64×40×40=102,400个令牌，而查询的数量是16×20×20=6,400，因此选择器应用了16×的压缩比。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "通过对时空令牌应用自适应3D平均池化层初始化视觉查询；默认配置下输入为102,400个令牌，输出为6,400个查询，压缩比为16倍。"
+    },
+    {
+      "sample_id": "013",
+      "query": "在“Beyond Clean Training Data”提出的模型无关框架中，迭代训练时每轮如何为每个训练样本分配权重？权重函数与哪个估计量一起迭代更新？",
+      "query_type": "方法/实验型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "Beyond Clean Training Data: A Versatile and Model-Agnostic Framework for Out-of-Distribution Detection with Contaminated Training Data (超越干净训练数据：一种适用于受污染训练数据的通用且模型无关的离群分布检测框架)",
+          "relevant_chunks": [
+            "第3节说明：采用样本级重要性权重机制，在每轮t中为每个训练样本x_i分配权重w_i^(t)，训练损失由式(1)指导；权重函数w_i^(t)与受污染训练集中OOD样本比例估计P_OOD^(t)之间进行迭代和交错更新，算法1中通过式(4)更新P_OOD^(t)，通过式(5)更新转移函数τ^(t)，再根据骨干是否使用负样本用式(6)或式(9)更新w_i^(t)。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "每轮为每个样本分配样本级权重w_i^(t)，训练损失为加权损失(1)；权重与受污染训练集中OOD比例估计P_OOD^(t)迭代、交错更新，并结合转移函数τ^(t)与终止准则控制迭代。"
+    },
+    {
+      "sample_id": "014",
+      "query": "在BASKET数据集中，每名球员的集锦视频大约由多少个事件片段拼接而成？",
+      "query_type": "方法/实验型",
+      "level": "简单",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "BASKET：用于细粒度技能评估的大规模视频数据集",
+          "relevant_chunks": [
+            "第3.1节“数据集构建”中说明：作者……为每位球员随机选择50个事件，然后围绕所选事件的时间戳提取视频片段，最后将片段打乱顺序并合并成一个单一集锦视频。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "大约50个事件片段。"
+    },
+    {
+      "sample_id": "015",
+      "query": "Balanced Rate-Distortion Optimization中，两种平衡策略分别主要用于哪两个训练场景？",
+      "query_type": "方法/实验型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "基于学习的图像压缩中的平衡率失真优化",
+          "relevant_chunks": [
+            "摘要和第3节指出：第一种提出的策略采用从粗到精的梯度下降方法，沿标准R-D优化轨迹进行，特别适用于从头开始训练LIC模型；第二种策略将重新表述的优化解析地处理为一个带等式约束的二次规划问题，非常适合在现有LIC模型上进行微调。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "第一种用于从头训练新的LIC模型，第二种用于微调已有LIC模型。"
+    },
+    {
+      "sample_id": "016",
+      "query": "在“Be More Specific”工作提出的以对象为中心的真实感（OcR）标注框架中，每个物体需要从哪两个维度进行真实感评分？",
+      "query_type": "方法/实验型",
+      "level": "简单",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "更具体：评估合成图像中物体中心真实感",
+          "relevant_chunks": [
+            "第3.2节“收集人工评估”中说明：标注流程要求从两个方面评估合成物体的物体级真实感，即物体形状和物体纹理，标注者需要分别给出形状真实感和纹理真实感的1到5分评分。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "每个物体都要分别评估“形状真实感”和“纹理真实感”两个维度。"
+    },
+    {
+      "sample_id": "017",
+      "query": "在BiLoRA提出的双线性LoRA中，任务的权重更新ΔW_t采用了什么形式的分解？",
+      "query_type": "方法/实验型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "BiLoRA：用于持续学习的近似正交参数空间",
+          "relevant_chunks": [
+            "第4.1节提出双线性LoRA：通过两个固定的正交基U和V，将任务的权重更新表示为ΔW_t = U B_t V^T，从而在不改变网络结构的情况下把原本d维的参数空间二次扩展到d^2维；作者分析表明，在这种双线性重构和频域稀疏约束下，不同任务的B_t矩阵在高维空间中几乎正交。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "ΔW_t = U B_t V^T（使用两个固定正交基U和V的双线性分解）。"
+    },
+    {
+      "sample_id": "018",
+      "query": "在β-FFT论文中，为了缓解半监督协同训练中的训练不稳定性与模型同质化，作者提出了哪两项关键技术？这两项技术分别主要起到什么作用？",
+      "query_type": "多跳推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "β-FFT: Nonlinear Interpolation and Differentiated Training Strategies for Semi-Supervised Medical Image Segmentation (β-FFT：半监督医学图像分割的非线性插值与差异化训练策略)",
+          "relevant_chunks": [
+            "摘要指出：为平衡一致性学习中不同增强（强/弱增强）带来的训练不稳定性，β-FFT引入基于FFT的非线性插值，在不同增强图像之间交换低频分量，生成更平滑且多样化的训练样本，从而弥合不同增强之间差异并提升泛化。",
+            "引言与第3.4节指出：为缓解协同训练同质化，提出差异化训练策略——学生模型1接受额外训练（学生模型2不进行该补充训练）；额外训练使用有标签数据，并结合从Beta分布采样进行线性插值生成的未标记数据作为正则化。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "两项关键技术是：①基于FFT的非线性插值（在强/弱增强图像间交换低频分量），用于生成平滑且多样的样本以降低一致性训练不稳定性并提升泛化；②差异化训练策略，让学生模型1进行额外训练（学生模型2不补充训练），并在额外训练中使用有标签数据与Beta分布线性插值生成的未标记数据作正则，从而缓解模型同质化。"
+    },
+    {
+      "sample_id": "019",
+      "query": "在CheckManual论文中，作者为评估“读懂电器说明书并让机器人按说明书操作电器”的能力，设计了哪几类基于手册的操作挑战？这些挑战分别侧重考察什么能力？",
+      "query_type": "多跳推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "CheckManual: A New Challenge and Benchmark for Manual-based Appliance Manipulation (CheckManual：基于手册的电器操作新挑战与基准)",
+          "relevant_chunks": [
+            "摘要与第1节指出：CheckManual提出首个基于手册的电器操作基准，围绕电器CAD模型与多页说明书构建数据集，并在仿真环境中设计了多个基于手册的电器操作挑战，用于评估机器人查阅说明书、理解部件功能和执行长时程操作任务的能力。",
+            "第3.3节与表1说明：CheckManual包含三类主要挑战赛道——赛道1“手册-CAD-设备对齐规划”，侧重考察机器人将说明书中的功能名称与CAD/实物部件对齐并规划高层步骤的能力；赛道2“基于手册和CAD的操作”，考察在已知CAD模型下，机器人依据手册执行低层操作的能力；赛道3“纯基于手册的操作”，在没有CAD的条件下，仅凭说明书和视觉观测完成电器操作，考察更困难的端到端理解与执行能力。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "CheckManual围绕“读懂电器说明书并按说明书操作”的场景，设计了三类基于手册的操作挑战：赛道1手册-CAD-设备对齐规划，主要考察机器人将说明书中的部件功能名称与CAD/实物部件对齐，并据此规划高层操作步骤的能力；赛道2基于手册和CAD的操作，考察在已知CAD模型下，机器人根据说明书执行低层物理操作（原子动作）的能力；赛道3纯基于手册的操作，在没有CAD的情况下，仅凭手册和RGB-D观测完成电器任务，考察更困难的端到端理解说明书并操作电器的能力。"
+    },
+    {
+      "sample_id": "020",
+      "query": "在Charm论文中，为何需要同时保留构图、高分辨率与宽高比？Charm的分词策略与位置/尺度嵌入分别如何支持这一点？",
+      "query_type": "多跳推理型",
+      "level": "困难",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "Charm: The Missing Piece in ViT Fine-Tuning for Image Aesthetic Assessment (Charm：视觉Transformer微调中图像美学评估缺失的关键环节)",
+          "relevant_chunks": [
+            "第1节与摘要指出：在图像美学评估（IAA）中，下采样或裁剪会通过改变构图、宽高比以及丢失高分辨率细节来改变美学评分；Charm避免完全下采样并保持某些区域为原始分辨率，同时融入构图、高分辨率、宽高比和多尺度信息，在计算效率与性能之间取得平衡。",
+            "第3节与3.2节说明：Charm将图像分割成固定大小图像块，选择性保留部分块为原始分辨率、其余下采样，形成更短的固定尺寸输入序列；位置嵌入编码不同分辨率之间及同一分辨率内块之间的空间关系，尺度嵌入帮助模型区分来自不同尺度的信息，且不修改预训练ViT的位置嵌入。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "因为IAA中下采样或裁剪会改变构图、宽高比并丢失高分辨率细节从而影响美学评分，因此需同时保留这些因素。Charm通过选择性保留部分图像块为原始分辨率、其余下采样，并排列成固定长度序列，既保留关键美学信息又控制计算量；位置嵌入编码多分辨率间与块间空间关系，尺度嵌入区分不同尺度信息，二者共同支持多尺度、多分辨率表示且与预训练ViT兼容。"
+    },
+    {
+      "sample_id": "021",
+      "query": "在BiM-VFI论文中，图2给出了三种运动情形。为什么双向运动场BiM比时间索引和距离索引更能消除时间到位置（TTL）模糊性，特别是在情况2和情况3中？",
+      "query_type": "多跳推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "BiM-VFI：针对非均匀运动视频的双向运动场引导帧插值",
+          "relevant_chunks": [
+            "第3.1节解释：距离索引仅依赖于源帧间相对距离，只能区分快慢，不能表达方向变化，因此无法完全解决非匀速运动下的TTL模糊性。",
+            "同一节进一步指出：BiM由目标帧到两源帧的双向光流幅度比R以及角度差Φ组成，在情况2中通过不同的R区分快慢，在情况3中既利用R又利用Φ分别为1.2π和0.8π，从而区分两辆车的不同运动轨迹，完全消除模糊性。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "因为BiM同时编码了目标帧到两源帧的幅度比R和角度差Φ：在情况2中，即便时间索引相同，BiM通过不同的R值区分快慢轨迹；在情况3中，原有时间索引和距离索引都无法区分两条方向不同的轨迹，而BiM通过不同的角度差Φ（如1.2π与0.8π）再结合幅度信息，将两种运动模式明确区分开，从而更彻底地消除了TTL模糊性。"
+    },
+    {
+      "sample_id": "022",
+      "query": "BACON论文在BASKET数据集上的实验结果是什么",
+      "query_type": "无答案型",
+      "level": "困难",
+      "domain": "CS",
+      "relevant_documents": [],
+      "ground_truth_answer": "信息不足以回答该问题"
+    },
+    {
+      "sample_id": "023",
+      "query": "论文《BARD-GS：Blur-Aware Reconstruction of Dynamic Scenes via Gaussian Splatting》中，作者在VOT2022单目标跟踪基准上报告的EAO指标是多少？",
+      "query_type": "无答案型",
+      "level": "困难",
+      "domain": "CS",
+      "relevant_documents": [],
+      "ground_truth_answer": "信息不足以回答该问题"
+    },
+    {
+      "sample_id": "024",
+      "query": "在论文“CaricatureBooth: Data-Free Interactive Caricature Generation in a Photo Booth”和“ChatGarment: Garment Estimation, Generation and Editing via Large Language Models”中，CaricatureBooth是从什么输入出发生成什么形式的漫画图像，ChatGarment又是从什么输入出发生成什么形式的服装缝纫纸样？",
+      "query_type": "多论文推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "CaricatureBooth： Data-Free Interactive Caricature Generation in a Photo Booth (CaricatureBooth：无需数据的互动式大头照生成系统)",
+          "relevant_chunks": [
+            "摘要指出：CaricatureBooth提出一个交互式漫画照相亭系统，在无需大规模漫画数据的情况下，仅给定一张参考人脸图像，通过TPS变形与身份保持扩散模型，生成高质量、身份保留且可通过贝塞尔曲线界面控制夸张程度的漫画大头照。"
+          ]
+        },
+        {
+          "doc_id": "",
+          "doc_title": "ChatGarment： Garment Estimation, Generation and Editing via Large Language Models (ChatGarment：基于大型语言模型的服装估计、生成与编辑)",
+          "relevant_chunks": [
+            "摘要指出：ChatGarment提出一种基于大型视觉语言模型的方法，从图像或文本描述中自动估计、生成和编辑3D服装缝纫纸样，输出为可披覆在3D人体上的2D缝纫版型（通过GarmentCode解码为3D服装），支持基于对话的服装重建与编辑。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "CaricatureBooth从单张人脸照片输入出发，用户通过贝塞尔曲线编辑关键点，系统结合TPS变形和身份保持扩散模型，生成高质量的个性化漫画人脸图像（漫画大头照）；ChatGarment从图像或文本描述输入出发，经由微调的视觉语言模型直接预测JSON格式的服装参数，再由GarmentCode解码为2D缝纫纸样并披覆到3D人体上，实现3D服装缝纫纸样的估计与生成。"
+    },
+    {
+      "sample_id": "025",
+      "query": "FEDGLOSS在联邦学习中要解决的核心问题，以及EIR在持续语义分割中要解决的核心问题分别是什么？",
+      "query_type": "多论文推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "Beyond Local Sharpness: Communication-Efficient Global Sharpness-aware Minimization for Federated Learning (超越局部锐度：面向联邦学习的高效通信全局锐度感知最小化)",
+          "relevant_chunks": [
+            "摘要与第1节指出：在联邦学习中，数据异质性会使模型收敛到尖锐最小值、损害泛化；局部锐度与全局损失曲面不一致使客户端侧SAM受限。FEDGLOSS的目标是优化全局锐度/全局平坦性（服务器端全局sharpness-aware）。"
+          ]
+        },
+        {
+          "doc_id": "",
+          "doc_title": "Beyond Background Shift: Rethinking Instance Replay in Continual Semantic Segmentation (超越背景偏移：重新思考连续语义分割中的实例回放)",
+          "relevant_chunks": [
+            "摘要与第1节指出：持续语义分割（CSS）存在背景偏移（background shift）与部分标注问题，导致旧类被混淆为背景并引发灾难性遗忘；EIR的核心要缓解背景偏移/背景混淆并减轻遗忘。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "FEDGLOSS的核心问题是联邦学习中的“全局锐度/全局平坦性”（异质数据导致尖锐最小值、局部锐度与全局几何不一致）；EIR的核心问题是持续语义分割中的“背景偏移（background shift）/背景混淆”（部分标注使旧类被当成背景，从而导致灾难性遗忘）。"
+    },
+    {
+      "sample_id": "026",
+      "query": "对比BHViT与Binarized Mamba-Transformer（BMTNet）两篇论文：它们分别针对什么任务？在二值化或轻量化应用场景上有何主要区别？",
+      "query_type": "多论文推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "BHViT: Binarized Hybrid Vision Transformer (BHViT：二值化混合视觉Transformer)",
+          "relevant_chunks": [
+            "摘要指出：BHViT是一种二值化友好的混合ViT架构，利用局部信息交互与层次化特征聚合、基于移位操作的MLP增强模块、量化分解的注意力矩阵二值化及正则化损失，面向通用视觉任务（如分类、分割）在边缘设备上部署，在二值化ViT方法中达到SOTA性能。"
+          ]
+        },
+        {
+          "doc_id": "",
+          "doc_title": "Binarized Mamba-Transformer for Lightweight Quad Bayer HybridEVS Demosaicing (用于轻量级四拜耳混合事件视觉传感器去马赛克的二值化Mamba-Transformer)",
+          "relevant_chunks": [
+            "摘要与第1节指出：BMTNet专为Quad Bayer HybridEVS原始图像去马赛克设计，采用混合二值化Mamba-Transformer架构融合Mamba与Swin Transformer，将投影层二值化并保留全精度选择性扫描机制，面向移动/边缘设备上的图像信号处理与去马赛克这一具体低层视觉任务。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "BHViT针对通用视觉任务（分类、分割等）的二值化ViT部署，采用混合ViT+QD注意力二值化与正则化损失，应用场景为通用边缘视觉；Binarized Mamba-Transformer（BMTNet）针对Quad Bayer HybridEVS去马赛克这一具体低层任务，采用二值化Mamba-Transformer融合全局与局部依赖，应用场景为移动端图像信号处理与去马赛克。前者为通用高层视觉二值化，后者为专用低层恢复任务的轻量化。"
+    },
+    {
+      "sample_id": "027",
+      "query": "BFANet与BG-Triangle两篇论文分别解决什么任务？",
+      "query_type": "多论文推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "BFANet: Revisiting 3D Semantic Segmentation with Boundary Feature Analysis (BFANet：基于边界特征分析的三维语义分割方法再探)",
+          "relevant_chunks": [
+            "摘要与第1节指出：BFANet从更精细视角重新审视三维语义分割，将分割错误划分为四类并为之设计专用指标；引入边界-语义模块解耦语义与边界特征、边界伪标签算法，任务目标是对点云中每个点进行语义分类并提升边界区域分割准确性。"
+          ]
+        },
+        {
+          "doc_id": "",
+          "doc_title": "BG-Triangle: Bezier Gaussian Triangle for 3D Vectorization and Rendering (BG-Triangle：用于三维矢量化与渲染的贝塞尔高斯三角形)",
+          "relevant_chunks": [
+            "摘要指出：BG-Triangle提出贝塞尔高斯三角形混合表示，将贝塞尔三角形矢量基元与高斯基元结合，用于分辨率无关的可微分渲染并保持锐利边缘；任务目标是从多视角图像得到矢量化三维场景表示并进行新视角渲染，与3DGS相比具有更优边界保持与更少基元。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "BFANet解决三维点云语义分割任务；BG-Triangle解决三维场景矢量化与可微渲染任务。前者为分割与分类，后者为重建与渲染。"
+    },
+    {
+      "sample_id": "028",
+      "query": "对比“通过无监督学习规避视听深度伪造检测数据集中的捷径”与“CDI：扩散模型中的受版权保护数据识别”：它们分别要检测或识别的对象是什么？",
+      "query_type": "多论文推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "Circumventing Shortcuts in Audio-visual Deepfake Detection Datasets with Unsupervised Learning (通过无监督学习规避视听深度伪造检测数据集中的捷径)",
+          "relevant_chunks": [
+            "摘要与第3节指出：该工作研究音视频深度伪造检测数据集中的“静音捷径”等偏差，并提出AVH-Align方法在仅使用真实数据的无监督设置下学习音视频对齐分数，用于区分真实视频与伪造视频，即检测视听深度伪造（deepfake）视频。"
+          ]
+        },
+        {
+          "doc_id": "",
+          "doc_title": "CDI： Copyrighted Data Identification in Diffusion Models (CDI：扩散模型中的受版权保护数据识别)",
+          "relevant_chunks": [
+            "摘要与第1节指出：CDI提出一个框架，帮助数据所有者判断其受版权保护的图像集合是否被用来训练给定的扩散模型，核心任务是对“受版权保护的数据集是否属于该扩散模型的训练数据”进行识别与统计检验。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "“通过无监督学习规避视听深度伪造检测数据集中的捷径”要检测的是视听深度伪造视频，即判断一段音视频是否为深度伪造；“CDI：扩散模型中的受版权保护数据识别”要识别的是某个受版权保护图像数据集是否被用来训练给定的扩散模型，即检测数据集层面的版权侵权使用。"
+    },
+    {
+      "sample_id": "029",
+      "query": "对比两篇贝叶斯相关论文（《视觉语言模型的贝叶斯测试时适应》与《贝叶斯提示流学习用于零样本异常检测》）：它们分别解决什么任务？在利用先验或似然的方式上有何主要区别？",
+      "query_type": "多论文推理型",
+      "level": "困难",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "Bayesian Test-Time Adaptation for Vision-Language Models (视觉语言模型的贝叶斯测试时适应)",
+          "relevant_chunks": [
+            "摘要与第1节指出：基于CLIP的测试时适应中，BCA方法除更新类别嵌入以适应似然外，还利用输入样本的后验持续更新每个类别嵌入的先验；双重更新使模型更好适应分布偏移，用于零样本图像分类，先验P(Y|U)与似然P(x|U)均参与动态更新。"
+          ]
+        },
+        {
+          "doc_id": "",
+          "doc_title": "Bayesian Prompt Flow Learning for Zero-Shot Anomaly Detection (贝叶斯提示流学习用于零样本异常检测)",
+          "relevant_chunks": [
+            "摘要指出：Bayes-PFL从贝叶斯视角将提示空间建模为可学习概率分布，设计提示流模块学习图像相关与图像无关的分布以正则化文本提示空间并提升未见类别泛化；用于零样本异常检测（如工业缺陷、医学异常），通过分布采样生成多样化文本提示覆盖提示空间，并结合RCA模块对齐文本与图像特征。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "贝叶斯测试时适应针对CLIP在分布偏移下的零样本分类，通过BCA同时更新似然（类别嵌入）与先验（类别先验），使后验更适应测试数据；贝叶斯提示流学习针对零样本异常检测，将提示空间建模为概率分布并学习图像相关/无关分布以正则化提示、生成多样化提示。前者在测试时更新先验与似然做分类，后者在训练时学习提示分布做异常检测，任务与更新机制不同。"
+    },
+    {
+      "sample_id": "030",
+      "query": "对比RWDS（卫星图像目标检测器分布偏移基准）与Directed Scene Graph（有向场景图图像描述基准）：两者分别评估什么能力？",
+      "query_type": "多论文推理型",
+      "level": "中等",
+      "domain": "CS",
+      "relevant_documents": [
+        {
+          "doc_id": "",
+          "doc_title": "Benchmarking Object Detectors under Real-World Distribution Shifts in Satellite Imagery (卫星图像中真实世界分布偏移下的目标检测器基准测试)",
+          "relevant_chunks": [
+            "摘要与第1节指出：RWDS是一套面向真实世界分布偏移的领域泛化基准，包含RWDS-CZ、RWDS-FR、RWDS-HE三个数据集，关注人道主义与气候变化应用；研究跨气候带与跨灾害/地理区域的空间域偏移，在单源与多源设置下评估SOTA目标检测器在卫星图像上的泛化与鲁棒性。"
+          ]
+        },
+        {
+          "doc_id": "",
+          "doc_title": "Benchmarking Large Vision-Language Models via Directed Scene Graph for Comprehensive Image Captioning (通过有向场景图进行综合图像描述的大规模视觉语言模型基准测试)",
+          "relevant_chunks": [
+            "摘要与第1节指出：该基准通过有向场景图（属性、物体、关系）评估大模型在综合图像描述上的能力，要求模型生成覆盖物体、属性与关系的细粒度描述，评估维度为描述是否完整、准确反映场景图结构，面向图像描述与视觉语言理解能力。"
+          ]
+        }
+      ],
+      "ground_truth_answer": "RWDS评估目标检测器在卫星图像上面向真实世界分布偏移的领域泛化与鲁棒性；Directed Scene Graph基准评估大规模视觉语言模型在综合图像描述（属性、物体、关系）上的能力。"
+    }
 ]

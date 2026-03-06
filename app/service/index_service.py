@@ -587,7 +587,9 @@ def _build_records_and_chunks(
     summary_text: str = meta["conclusion"]
     original_text: str = meta["original_text"]
 
+    logger.error(f"[_build_records_and_chunks] 入参: original_text 长度={len(original_text)}, title={title[:50] if title else ''}...")
     if not original_text:
+        logger.error("[_build_records_and_chunks] 原因: original_text 为空，直接返回 []")
         return [], []
 
     keywords_text = "；".join(keywords_list)
@@ -599,16 +601,16 @@ def _build_records_and_chunks(
     chunks = ChunkerService.chunk(chunk_req)
     chunks_list = list(chunks) if chunks else []
     chunks_count = len(chunks_list)
-    logger.error(f"[_build_records_and_chunks] ChunkerService 返回 chunks: {chunks}")
     logger.error(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {chunks_count}")
 
     if not chunks_list:
-        logger.warning("[_build_records_and_chunks] 切片结果为空，跳过")
+        logger.error("[_build_records_and_chunks] 原因: ChunkerService 切片结果为空，返回 []")
         return [], []
 
     parents: Dict[int, Any] = {}
     children_by_parent_index: Dict[int, List[Any]] = {}
-    for c in chunks_list:
+    chunks_without_parent: List[Any] = []  # child 但 parent_idx 为 None 的 chunk
+    for i, c in enumerate(chunks_list):
         metadata: Dict[str, Any] = getattr(c, "metadata", {}) or {}
         chunk_type: str = (metadata.get("chunk_type") or "").strip().lower()
         chunk_index: int = int(getattr(c, "chunk_index", 0) or 0)
@@ -634,13 +636,33 @@ def _build_records_and_chunks(
         is_child = chunk_type == "child" or parent_idx is not None
         if is_child and parent_idx is not None:
             children_by_parent_index.setdefault(parent_idx, []).append(c)
+        elif is_child and parent_idx is None:
+            chunks_without_parent.append(c)
         else:
             parents[chunk_index] = c
 
+        # 前 5 个 chunk 打印详细诊断
+        if i < 5:
+            logger.error(
+                f"[_build_records_and_chunks] chunk[{i}] chunk_index={chunk_index} chunk_type={chunk_type!r} "
+                f"parent_idx={parent_idx} metadata.keys={list(metadata.keys())} -> "
+                f"{'child' if (is_child and parent_idx is not None) else 'parent' if not is_child else 'child(无parent_idx)'}"
+            )
+
     flat_children_count = sum(len(v) for v in children_by_parent_index.values())
     logger.error(
-        f"[_build_records_and_chunks] 解析结果: parent 块 {len(parents)} 个, child 块 {flat_children_count} 个"
+        f"[_build_records_and_chunks] 解析结果: parent 块 {len(parents)} 个(parent_keys={list(parents.keys())[:20]}), "
+        f"child 块 {flat_children_count} 个(child_parent_keys={list(children_by_parent_index.keys())[:20]}), "
+        f"child 但无 parent_idx 的块 {len(chunks_without_parent)} 个"
     )
+
+    # 诊断：child 引用的 parent 是否存在于 parents 中
+    orphan_parent_indices = [k for k in children_by_parent_index if k not in parents]
+    if orphan_parent_indices:
+        logger.error(
+            f"[_build_records_and_chunks] 诊断: 有 {len(orphan_parent_indices)} 个 child 引用的 parent_index 不在 parents 中: "
+            f"{orphan_parent_indices[:10]}，这些 child 不会被写入"
+        )
 
     # 先按顺序收集所有 child 的 (chunk, parent_content)，再批量 encode
     flat_children: List[Tuple[Any, str]] = []
@@ -650,14 +672,23 @@ def _build_records_and_chunks(
         for c in children_by_parent_index.get(parent_index, []):
             flat_children.append((c, parent_content))
 
-    # Fallback：若无 child 块但有 parent 块，将每个 parent 视为自引用（parent 即 child），确保有数据可写入
+    # Fallback1：全为 child 且 parent_idx 为 None 时，将这些 chunk 视为 parent 以便后续 fallback2 使用
+    if not parents and chunks_without_parent:
+        logger.error(
+            f"[_build_records_and_chunks] 无 parent 块，但有 {len(chunks_without_parent)} 个 child(无 parent_idx)，"
+            "将其视为 parent 以便写入"
+        )
+        for i, c in enumerate(chunks_without_parent):
+            parents[100000 + i] = c  # 合成索引避免与 chunk_index 冲突
+
+    # Fallback2：若无 child 块但有 parent 块，将每个 parent 视为自引用（parent 即 child），确保有数据可写入
     if not flat_children and parents:
         c0 = next(iter(parents.values()))
         meta0 = getattr(c0, "metadata", {}) or {}
-        logger.warning(
-            "[_build_records_and_chunks] 无 child 块，fallback 为将 parent 块作为可写入块。"
+        logger.error(
+            "[_build_records_and_chunks] 无 child 块，触发 fallback：将 parent 块作为可写入块。"
             f"首个 chunk 诊断: metadata.keys={list(meta0.keys())} chunk_type={meta0.get('chunk_type')!r} "
-            f"parent_chunk_id={getattr(c0, 'parent_chunk_id', None)}"
+            f"parent_chunk_id={getattr(c0, 'parent_chunk_id', None)} content_len={len(getattr(c0, 'content', '') or '')}"
         )
         for parent_index in sorted(parents.keys()):
             parent_chunk = parents[parent_index]
@@ -671,6 +702,9 @@ def _build_records_and_chunks(
 
     contents = [getattr(c, "content", "") or "" for c, _ in flat_children]
     to_encode = [t for t in contents if t]
+    logger.error(
+        f"[_build_records_and_chunks] flat_children 数量={len(flat_children)}, 非空 content 数量={len(to_encode)}"
+    )
     if to_encode:
         content_vecs = model.encode(
             to_encode,
@@ -681,6 +715,17 @@ def _build_records_and_chunks(
         vec_iter = iter(content_vecs)
     else:
         vec_iter = iter([])
+        if flat_children:
+            logger.error(
+                "[_build_records_and_chunks] 诊断: flat_children 非空但所有 content 为空，将使用零向量"
+            )
+
+    if not flat_children:
+        logger.error(
+            "[_build_records_and_chunks] 原因: flat_children 为空 -> records 为空。"
+            f"可能原因: 1) 全为 child 且 parent_idx 不在 parents 中 2) 全为 child 且 parent_idx 为 None 3) parents 为空"
+        )
+        return [], []
 
     for i, ((c, parent_content), content) in enumerate(zip(flat_children, contents), start=1):
         chunk_index: int = int(getattr(c, "chunk_index", 0) or 0)

@@ -597,7 +597,7 @@ def _build_records_and_chunks(
     chunks = ChunkerService.chunk(chunk_req)
     chunks_list = list(chunks) if chunks else []
     chunks_count = len(chunks_list)
-    logging.info(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {chunks_count}")
+    logging.error(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {chunks_count}")
 
     if not chunks_list:
         logging.warning("[_build_records_and_chunks] 切片结果为空，跳过")
@@ -635,7 +635,7 @@ def _build_records_and_chunks(
             parents[chunk_index] = c
 
     flat_children_count = sum(len(v) for v in children_by_parent_index.values())
-    logging.info(
+    logging.error(
         f"[_build_records_and_chunks] 解析结果: parent 块 {len(parents)} 个, child 块 {flat_children_count} 个"
     )
 
@@ -737,7 +737,7 @@ def _build_records_and_chunks(
         }
         chunk_models.append(chunk)
 
-    logging.info(f"[_build_records_and_chunks] 构建完成: records={len(records)}, chunk_models={len(chunk_models)}")
+    logging.error(f"[_build_records_and_chunks] 构建完成: records={len(records)}, chunk_models={len(chunk_models)}")
     return records, chunk_models
 
 async def build_index_from_json_contents(
@@ -754,7 +754,7 @@ async def build_index_from_json_contents(
     - skip_base_db=False：先写入 BaseDB 获取 doc_id，再写入 Milvus 与切片表（与 API 行为一致）
     """
     logger = logging.getLogger(__name__)
-    logger.info(f"[build_index_from_json_contents] 开始: kb_id={kb_id}, 文件数={len(items)}, skip_base_db={skip_base_db}")
+    logger.error(f"[build_index_from_json_contents] 开始: kb_id={kb_id}, 文件数={len(items)}, skip_base_db={skip_base_db}")
 
     if not items:
         logger.warning("[build_index_from_json_contents] 无待处理文件")
@@ -786,7 +786,7 @@ async def build_index_from_json_contents(
         vector_dim = int(env_dim) if env_dim else model.get_sentence_embedding_dimension()
 
     ensure_parent_child_collection(collection, vector_dim)
-    logger.info(f"[build_index_from_json_contents] 集合 {collection} 已就绪, vector_dim={vector_dim}")
+    logger.error(f"[build_index_from_json_contents] 集合 {collection} 已就绪, vector_dim={vector_dim}")
 
     doc_client = _get_document_client() if not skip_base_db else None
     chunk_client = _get_chunk_client() if not skip_base_db else None
@@ -802,7 +802,7 @@ async def build_index_from_json_contents(
     skipped_files: List[str] = []
 
     for filename, content in items:
-        logger.info(f"[build_index_from_json_contents] 处理文件: {filename}")
+        logger.error(f"[build_index_from_json_contents] 处理文件: {filename}")
         try:
             data = json.loads(content)
         except json.JSONDecodeError as e:
@@ -816,7 +816,7 @@ async def build_index_from_json_contents(
             logger.warning(f"[build_index_from_json_contents] {filename} original_text 为空，跳过")
             skipped_files.append(filename)
             continue
-        logger.info(f"[build_index_from_json_contents] {filename} original_text 长度: {len(original_text)}")
+        logger.error(f"[build_index_from_json_contents] {filename} original_text 长度: {len(original_text)}")
 
         title: str = meta["title"]
         authors_raw: List[Dict[str, Any]] = meta["authors_raw"]
@@ -835,7 +835,7 @@ async def build_index_from_json_contents(
 
         if skip_base_db:
             doc_id = _hash_id(f"{filename}_{original_text[:100]}")
-            logger.info(f"[build_index_from_json_contents] skip_base_db=True, 使用 hash doc_id={doc_id}")
+            logger.error(f"[build_index_from_json_contents] skip_base_db=True, 使用 hash doc_id={doc_id}")
         else:
             document = DocumentModel()
             document.kb_id = kb_id
@@ -852,7 +852,7 @@ async def build_index_from_json_contents(
 
             try:
                 created = await doc_client.create_document(document)
-                logger.info(f"[build_index_from_json_contents] BaseDB create_document 返回类型: {type(created).__name__}")
+                logger.error(f"[build_index_from_json_contents] BaseDB create_document 返回类型: {type(created).__name__}")
             except Exception as exc:
                 logger.error(f"[build_index_from_json_contents] BaseDB 创建文档失败 {filename}: {exc}", exc_info=True)
                 skipped_files.append(filename)
@@ -881,7 +881,7 @@ async def build_index_from_json_contents(
                 )
                 skipped_files.append(filename)
                 continue
-            logger.info(f"[build_index_from_json_contents] doc_id={doc_id}")
+            logger.error(f"[build_index_from_json_contents] doc_id={doc_id}")
         records, chunk_models = _build_records_and_chunks(
             data=data,
             kb_id=kb_id,
@@ -902,7 +902,7 @@ async def build_index_from_json_contents(
         if not skip_base_db:
             try:
                 created = await chunk_client.create_document_chunk_batch(chunk_models)
-                logger.info(
+                logger.error(
                     f"[build_index_from_json_contents] BaseDB create_document_chunk_batch 返回类型: {type(created).__name__}, "
                     f"records 数={len(records)}"
                 )
@@ -919,18 +919,18 @@ async def build_index_from_json_contents(
                 )
                 skipped_files.append(filename)
                 continue
-            logger.info(f"[build_index_from_json_contents] 已获取 chunk_ids 数量: {len(chunk_ids)}")
+            logger.error(f"[build_index_from_json_contents] 已获取 chunk_ids 数量: {len(chunk_ids)}")
             for rec, cid in zip(records, chunk_ids):
                 rec["id"] = cid
 
-        logger.info(f"[build_index_from_json_contents] 准备写入 Milvus: collection={collection}, records 数={len(records)}")
+        logger.error(f"[build_index_from_json_contents] 准备写入 Milvus: collection={collection}, records 数={len(records)}")
         try:
             insert_req = InsertRequest(
                 collection_name=collection,
                 records=records,
             )
             ids = StorageService.insert(insert_req)
-            logger.info(f"[build_index_from_json_contents] Milvus 写入成功: 返回 ids 数量={len(ids) if ids else 0}")
+            logger.error(f"[build_index_from_json_contents] Milvus 写入成功: 返回 ids 数量={len(ids) if ids else 0}")
         except Exception as exc:
             logger.error(f"[build_index_from_json_contents] Milvus 写入失败 {filename}: {exc}", exc_info=True)
             skipped_files.append(filename)
@@ -939,9 +939,9 @@ async def build_index_from_json_contents(
         total_documents += 1
         total_chunks += len(chunk_models)
         milvus_records += inserted_count
-        logger.info(f"[build_index_from_json_contents] {filename} 完成: doc_id={doc_id}, 写入 Milvus {inserted_count} 条")
+        logger.error(f"[build_index_from_json_contents] {filename} 完成: doc_id={doc_id}, 写入 Milvus {inserted_count} 条")
 
-    logger.info(
+    logger.error(
         f"[build_index_from_json_contents] 全部完成: total_documents={total_documents}, "
         f"total_chunks={total_chunks}, milvus_records={milvus_records}, skipped={len(skipped_files)}"
     )
@@ -1033,7 +1033,7 @@ async def insert_single_paper_data(
             rec["id"] = cid
 
     insert_req = InsertRequest(collection_name=collection, records=records)
-    logging.info(f"[insert_single_paper_data] 写入 Milvus: collection={collection}, records 数={len(records)}")
+    logging.error(f"[insert_single_paper_data] 写入 Milvus: collection={collection}, records 数={len(records)}")
     ids = StorageService.insert(insert_req)
 
     return {

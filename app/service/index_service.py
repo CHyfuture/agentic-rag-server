@@ -488,25 +488,16 @@ def _extract_chunk_ids_from_batch_response(
     不依赖 API 返回顺序。
     """
     if created is None or not records:
+        logging.debug("[_extract_chunk_ids] created 为空或 records 为空")
         return []
-    if isinstance(created, (list, tuple)):
-        items = created
-    elif isinstance(created, dict):
-        data = created.get("data") or created.get("items") or created.get("list")
-        if isinstance(data, dict):
-            items = data.get("list") or data.get("items") or data.get("data") or []
-        elif isinstance(data, (list, tuple)):
-            items = data
-        else:
-            items = []
-    else:
-        data = getattr(created, "data", None) or getattr(created, "items", None)
-        items = (
-            (data.get("list") or data.get("items") or data.get("data") or [])
-            if isinstance(data, dict)
-            else (data if isinstance(data, (list, tuple)) else [])
+    items = created if isinstance(created, (list, tuple)) else getattr(created, "data", None) or getattr(created, "items", None) or []
+    if not isinstance(items, (list, tuple)):
+        logging.warning(f"[_extract_chunk_ids] created 的 data/items 不是列表: type={type(items).__name__}")
+        return []
+    if len(items) != len(records):
+        logging.warning(
+            f"[_extract_chunk_ids] BaseDB 返回 items 数量({len(items)}) 与 records 数量({len(records)}) 不一致"
         )
-    if not isinstance(items, (list, tuple)) or len(items) != len(records):
         return []
 
     def _key(r: Dict[str, Any]) -> tuple:
@@ -535,10 +526,12 @@ def _extract_chunk_ids_from_batch_response(
         k = _key(r)
         lst = item_lists_by_key.get(k)
         if not lst:
+            logging.warning(f"[_extract_chunk_ids] 无法匹配 record: doc_id={k[0]}, chunk_index={k[1]}, content_preview={str(k[2])[:50]}...")
             return []
         it = lst.pop(0)
         cid = _get_id_from_item(it)
         if cid is None:
+            logging.warning(f"[_extract_chunk_ids] 无法从 item 提取 id: item={it!r}")
             return []
         ids.append(cid)
     return ids
@@ -602,7 +595,9 @@ def _build_records_and_chunks(
         strategy="parent_child",
     )
     chunks = ChunkerService.chunk(chunk_req)
+    logging.info(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {len(chunks) if chunks else 0}")
     if not chunks:
+        logging.warning("[_build_records_and_chunks] 切片结果为空，跳过")
         return [], []
 
     parents: Dict[int, Any] = {}
@@ -633,6 +628,16 @@ def _build_records_and_chunks(
             parents[chunk_index] = c
         elif chunk_type == "child" and parent_idx is not None:
             children_by_parent_index.setdefault(parent_idx, []).append(c)
+
+    flat_children_count = sum(len(v) for v in children_by_parent_index.values())
+    logging.info(
+        f"[_build_records_and_chunks] 解析结果: parent 块 {len(parents)} 个, child 块 {flat_children_count} 个"
+    )
+    if flat_children_count == 0:
+        logging.warning(
+            "[_build_records_and_chunks] 无 child 块，仅 parent 块不会被写入。"
+            "请检查 ChunkerService parent_child 策略是否返回 child 类型。"
+        )
 
     records: List[Dict[str, Any]] = []
     chunk_models: List[DocumentChunkModel] = []
@@ -718,6 +723,7 @@ def _build_records_and_chunks(
         }
         chunk_models.append(chunk)
 
+    logging.info(f"[_build_records_and_chunks] 构建完成: records={len(records)}, chunk_models={len(chunk_models)}")
     return records, chunk_models
 
 async def build_index_from_json_contents(
@@ -733,7 +739,11 @@ async def build_index_from_json_contents(
     - skip_base_db=True：仅写入 Milvus，不调用 BaseDB（适用于 BaseDB 不可用或本地脚本场景）
     - skip_base_db=False：先写入 BaseDB 获取 doc_id，再写入 Milvus 与切片表（与 API 行为一致）
     """
+    logger = logging.getLogger(__name__)
+    logger.info(f"[build_index_from_json_contents] 开始: kb_id={kb_id}, 文件数={len(items)}, skip_base_db={skip_base_db}")
+
     if not items:
+        logger.warning("[build_index_from_json_contents] 无待处理文件")
         return {
             "kb_id": kb_id,
             "total_documents": 0,
@@ -762,6 +772,7 @@ async def build_index_from_json_contents(
         vector_dim = int(env_dim) if env_dim else model.get_sentence_embedding_dimension()
 
     ensure_parent_child_collection(collection, vector_dim)
+    logger.info(f"[build_index_from_json_contents] 集合 {collection} 已就绪, vector_dim={vector_dim}")
 
     doc_client = _get_document_client() if not skip_base_db else None
     chunk_client = _get_chunk_client() if not skip_base_db else None
@@ -777,17 +788,21 @@ async def build_index_from_json_contents(
     skipped_files: List[str] = []
 
     for filename, content in items:
+        logger.info(f"[build_index_from_json_contents] 处理文件: {filename}")
         try:
             data = json.loads(content)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.warning(f"[build_index_from_json_contents] JSON 解析失败 {filename}: {e}")
             skipped_files.append(filename)
             continue
 
         meta = _extract_paper_metadata(data)
         original_text: str = meta["original_text"]
         if not original_text:
+            logger.warning(f"[build_index_from_json_contents] {filename} original_text 为空，跳过")
             skipped_files.append(filename)
             continue
+        logger.info(f"[build_index_from_json_contents] {filename} original_text 长度: {len(original_text)}")
 
         title: str = meta["title"]
         authors_raw: List[Dict[str, Any]] = meta["authors_raw"]
@@ -806,6 +821,7 @@ async def build_index_from_json_contents(
 
         if skip_base_db:
             doc_id = _hash_id(f"{filename}_{original_text[:100]}")
+            logger.info(f"[build_index_from_json_contents] skip_base_db=True, 使用 hash doc_id={doc_id}")
         else:
             document = DocumentModel()
             document.kb_id = kb_id
@@ -822,25 +838,36 @@ async def build_index_from_json_contents(
 
             try:
                 created = await doc_client.create_document(document)
+                logger.info(f"[build_index_from_json_contents] BaseDB create_document 返回类型: {type(created).__name__}")
             except Exception as exc:
+                logger.error(f"[build_index_from_json_contents] BaseDB 创建文档失败 {filename}: {exc}", exc_info=True)
                 skipped_files.append(filename)
                 continue
 
+            # 兼容多种返回结构: {"data": {"id": N}} / {"data": [{"id": N}]} / 对象.data.id
+            doc_id = None
             if isinstance(created, dict):
                 data = created.get("data")
-                raw_id = data.get("id") if isinstance(data, dict) else None
-            else:
-                raw_id = getattr(created, "id", None) or (
-                    getattr(getattr(created, "data", None), "id", None) if hasattr(created, "data") else None
-                )
-            try:
-                doc_id = int(raw_id) if raw_id is not None else None
-            except (TypeError, ValueError):
-                doc_id = None
+                if isinstance(data, dict):
+                    doc_id = data.get("id")
+                elif isinstance(data, (list, tuple)) and data:
+                    doc_id = data[0].get("id") if isinstance(data[0], dict) else None
+            elif hasattr(created, "data"):
+                d = getattr(created, "data", None)
+                if isinstance(d, dict):
+                    doc_id = d.get("id")
+                elif isinstance(d, (list, tuple)) and d:
+                    doc_id = d[0].get("id") if isinstance(d[0], dict) else None
+            if doc_id is not None:
+                doc_id = int(doc_id) if isinstance(doc_id, (int, float)) else None
 
             if not isinstance(doc_id, int):
+                logger.error(
+                    f"[build_index_from_json_contents] 无法从 BaseDB 响应提取 doc_id, created={created!r}"
+                )
                 skipped_files.append(filename)
                 continue
+            logger.info(f"[build_index_from_json_contents] doc_id={doc_id}")
         records, chunk_models = _build_records_and_chunks(
             data=data,
             kb_id=kb_id,
@@ -853,33 +880,57 @@ async def build_index_from_json_contents(
         )
 
         if not records:
+            logger.warning(f"[build_index_from_json_contents] {filename} records 为空（切片无 child 块），跳过")
             skipped_files.append(filename)
             continue
 
         # 使用 BaseDB 时：先写入 DB 获取 chunk_id，再替换 records 的 id 后写入 Milvus，保证 id 一致
         if not skip_base_db:
-            created = await chunk_client.create_document_chunk_batch(chunk_models)
-            chunk_ids = _extract_chunk_ids_from_batch_response(created, records)
-            if chunk_ids:
-                for rec, cid in zip(records, chunk_ids):
-                    rec["id"] = cid
-            else:
-                # chunk_id 提取失败时仍写入 Milvus，使用 records 中已有的 hash id，避免数据丢失
-                logging.warning(
-                    "无法从 BaseDB create_document_chunk_batch 响应中提取 chunk_id，"
-                    "将使用 records 原有 id 写入 Milvus。响应格式可能与预期不符: %s",
-                    type(created).__name__,
+            try:
+                created = await chunk_client.create_document_chunk_batch(chunk_models)
+                logger.info(
+                    f"[build_index_from_json_contents] BaseDB create_document_chunk_batch 返回类型: {type(created).__name__}, "
+                    f"records 数={len(records)}"
                 )
-        insert_req = InsertRequest(
-            collection_name=collection,
-            records=records,
-        )
-        ids = StorageService.insert(insert_req)
-        inserted_count = len(ids)
+            except Exception as exc:
+                logger.error(f"[build_index_from_json_contents] BaseDB 创建 chunk 失败 {filename}: {exc}", exc_info=True)
+                skipped_files.append(filename)
+                continue
+            chunk_ids = _extract_chunk_ids_from_batch_response(created, records)
+            if not chunk_ids:
+                logger.error(
+                    f"[build_index_from_json_contents] 无法从 BaseDB 响应提取 chunk_ids, "
+                    f"created 类型={type(created).__name__}, records 数={len(records)}。"
+                    "请检查 BaseDB create_document_chunk_batch 返回格式与 _extract_chunk_ids_from_batch_response 匹配逻辑。"
+                )
+                skipped_files.append(filename)
+                continue
+            logger.info(f"[build_index_from_json_contents] 已获取 chunk_ids 数量: {len(chunk_ids)}")
+            for rec, cid in zip(records, chunk_ids):
+                rec["id"] = cid
+
+        logger.info(f"[build_index_from_json_contents] 准备写入 Milvus: collection={collection}, records 数={len(records)}")
+        try:
+            insert_req = InsertRequest(
+                collection_name=collection,
+                records=records,
+            )
+            ids = StorageService.insert(insert_req)
+            logger.info(f"[build_index_from_json_contents] Milvus 写入成功: 返回 ids 数量={len(ids) if ids else 0}")
+        except Exception as exc:
+            logger.error(f"[build_index_from_json_contents] Milvus 写入失败 {filename}: {exc}", exc_info=True)
+            skipped_files.append(filename)
+            continue
+        inserted_count = len(ids) if ids else 0
         total_documents += 1
         total_chunks += len(chunk_models)
         milvus_records += inserted_count
+        logger.info(f"[build_index_from_json_contents] {filename} 完成: doc_id={doc_id}, 写入 Milvus {inserted_count} 条")
 
+    logger.info(
+        f"[build_index_from_json_contents] 全部完成: total_documents={total_documents}, "
+        f"total_chunks={total_chunks}, milvus_records={milvus_records}, skipped={len(skipped_files)}"
+    )
     return {
         "kb_id": kb_id,
         "total_documents": total_documents,
@@ -968,6 +1019,7 @@ async def insert_single_paper_data(
             rec["id"] = cid
 
     insert_req = InsertRequest(collection_name=collection, records=records)
+    logging.info(f"[insert_single_paper_data] 写入 Milvus: collection={collection}, records 数={len(records)}")
     ids = StorageService.insert(insert_req)
 
     return {

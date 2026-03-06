@@ -908,11 +908,11 @@ async def build_index_from_json_contents(
             # 兼容多种返回结构: {"data": {"id": N}} / {"data": [{"id": N}]} / 对象.data.id
             doc_id = None
             if isinstance(created, dict):
-                data = created.get("data")
-                if isinstance(data, dict):
-                    doc_id = data.get("id")
-                elif isinstance(data, (list, tuple)) and data:
-                    doc_id = data[0].get("id") if isinstance(data[0], dict) else None
+                created_data = created.get("data")
+                if isinstance(created_data, dict):
+                    doc_id = created_data.get("id")
+                elif isinstance(created_data, (list, tuple)) and created_data:
+                    doc_id = created_data[0].get("id") if isinstance(created_data[0], dict) else None
             elif hasattr(created, "data"):
                 d = getattr(created, "data", None)
                 if isinstance(d, dict):

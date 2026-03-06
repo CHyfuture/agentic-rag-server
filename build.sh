@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # 版本号，我希望通过参数 -t 来指定
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_rsa
+
 VERSION=""
 
 # 解析命令行参数

@@ -41,6 +41,8 @@ from milvus_service import (
 # 环境与 Milvus 连接
 # ===========================
 
+logger = logging.getLogger(__name__)
+
 
 def _load_milvus_env() -> None:
     """确保 MILVUS_* 相关环境变量已加载。
@@ -488,14 +490,14 @@ def _extract_chunk_ids_from_batch_response(
     不依赖 API 返回顺序。
     """
     if created is None or not records:
-        logging.debug("[_extract_chunk_ids] created 为空或 records 为空")
+        logger.debug("[_extract_chunk_ids] created 为空或 records 为空")
         return []
     items = created if isinstance(created, (list, tuple)) else getattr(created, "data", None) or getattr(created, "items", None) or []
     if not isinstance(items, (list, tuple)):
-        logging.warning(f"[_extract_chunk_ids] created 的 data/items 不是列表: type={type(items).__name__}")
+        logger.warning(f"[_extract_chunk_ids] created 的 data/items 不是列表: type={type(items).__name__}")
         return []
     if len(items) != len(records):
-        logging.warning(
+        logger.warning(
             f"[_extract_chunk_ids] BaseDB 返回 items 数量({len(items)}) 与 records 数量({len(records)}) 不一致"
         )
         return []
@@ -526,12 +528,12 @@ def _extract_chunk_ids_from_batch_response(
         k = _key(r)
         lst = item_lists_by_key.get(k)
         if not lst:
-            logging.warning(f"[_extract_chunk_ids] 无法匹配 record: doc_id={k[0]}, chunk_index={k[1]}, content_preview={str(k[2])[:50]}...")
+            logger.warning(f"[_extract_chunk_ids] 无法匹配 record: doc_id={k[0]}, chunk_index={k[1]}, content_preview={str(k[2])[:50]}...")
             return []
         it = lst.pop(0)
         cid = _get_id_from_item(it)
         if cid is None:
-            logging.warning(f"[_extract_chunk_ids] 无法从 item 提取 id: item={it!r}")
+            logger.warning(f"[_extract_chunk_ids] 无法从 item 提取 id: item={it!r}")
             return []
         ids.append(cid)
     return ids
@@ -597,10 +599,11 @@ def _build_records_and_chunks(
     chunks = ChunkerService.chunk(chunk_req)
     chunks_list = list(chunks) if chunks else []
     chunks_count = len(chunks_list)
-    logging.error(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {chunks_count}")
+    logger.error(f"[_build_records_and_chunks] ChunkerService 返回 chunks: {chunks}")
+    logger.error(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {chunks_count}")
 
     if not chunks_list:
-        logging.warning("[_build_records_and_chunks] 切片结果为空，跳过")
+        logger.warning("[_build_records_and_chunks] 切片结果为空，跳过")
         return [], []
 
     parents: Dict[int, Any] = {}
@@ -635,7 +638,7 @@ def _build_records_and_chunks(
             parents[chunk_index] = c
 
     flat_children_count = sum(len(v) for v in children_by_parent_index.values())
-    logging.error(
+    logger.error(
         f"[_build_records_and_chunks] 解析结果: parent 块 {len(parents)} 个, child 块 {flat_children_count} 个"
     )
 
@@ -651,7 +654,7 @@ def _build_records_and_chunks(
     if not flat_children and parents:
         c0 = next(iter(parents.values()))
         meta0 = getattr(c0, "metadata", {}) or {}
-        logging.warning(
+        logger.warning(
             "[_build_records_and_chunks] 无 child 块，fallback 为将 parent 块作为可写入块。"
             f"首个 chunk 诊断: metadata.keys={list(meta0.keys())} chunk_type={meta0.get('chunk_type')!r} "
             f"parent_chunk_id={getattr(c0, 'parent_chunk_id', None)}"
@@ -737,7 +740,7 @@ def _build_records_and_chunks(
         }
         chunk_models.append(chunk)
 
-    logging.error(f"[_build_records_and_chunks] 构建完成: records={len(records)}, chunk_models={len(chunk_models)}")
+    logger.error(f"[_build_records_and_chunks] 构建完成: records={len(records)}, chunk_models={len(chunk_models)}")
     return records, chunk_models
 
 async def build_index_from_json_contents(
@@ -753,7 +756,6 @@ async def build_index_from_json_contents(
     - skip_base_db=True：仅写入 Milvus，不调用 BaseDB（适用于 BaseDB 不可用或本地脚本场景）
     - skip_base_db=False：先写入 BaseDB 获取 doc_id，再写入 Milvus 与切片表（与 API 行为一致）
     """
-    logger = logging.getLogger(__name__)
     logger.error(f"[build_index_from_json_contents] 开始: kb_id={kb_id}, 文件数={len(items)}, skip_base_db={skip_base_db}")
 
     if not items:
@@ -1033,7 +1035,7 @@ async def insert_single_paper_data(
             rec["id"] = cid
 
     insert_req = InsertRequest(collection_name=collection, records=records)
-    logging.error(f"[insert_single_paper_data] 写入 Milvus: collection={collection}, records 数={len(records)}")
+    logger.error(f"[insert_single_paper_data] 写入 Milvus: collection={collection}, records 数={len(records)}")
     ids = StorageService.insert(insert_req)
 
     return {

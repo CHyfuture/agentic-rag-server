@@ -18,8 +18,11 @@ deepSeekClient = DeepSeekClient(API_KEY,BASE_URL,MODEL)
 def process_text_stream_api(req: QaRequest):
     text = req.query
     rag_type = req.rag_type
+    doc_id = req.doc_id
+    kb_id = req.kb_id
+    security_level = req.security_level
     if rag_type == 1:
-        search_results = retrieval_service.hybrid_search(query=text, top_k=10)
+        search_results = retrieval_service.hybrid_search(query=text, top_k=10,doc_id=doc_id,kb_id=kb_id,security_level=security_level)
 
         # 从检索结果中提取 content 字段，组织为知识库内容数组
         ref_doc = [

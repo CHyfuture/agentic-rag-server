@@ -40,7 +40,7 @@ def main() -> None:
     parser.add_argument(
         "--api-url",
         type=str,
-        default="http://192.168.1.5:5010/api/v1/index/build",
+        default="http://192.168.1.5:5010/api/v1/index/build_json",
         help="索引构建接口地址",
     )
 

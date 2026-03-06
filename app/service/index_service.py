@@ -595,54 +595,49 @@ def _build_records_and_chunks(
         strategy="parent_child",
     )
     chunks = ChunkerService.chunk(chunk_req)
-    logging.info(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {len(chunks) if chunks else 0}")
-    if not chunks:
+    chunks_list = list(chunks) if chunks else []
+    chunks_count = len(chunks_list)
+    logging.info(f"[_build_records_and_chunks] ChunkerService 返回 chunks 数量: {chunks_count}")
+
+    if not chunks_list:
         logging.warning("[_build_records_and_chunks] 切片结果为空，跳过")
         return [], []
 
     parents: Dict[int, Any] = {}
     children_by_parent_index: Dict[int, List[Any]] = {}
-    for c in chunks:
+    for c in chunks_list:
         metadata: Dict[str, Any] = getattr(c, "metadata", {}) or {}
-        chunk_type: str = metadata.get("chunk_type") or ""
+        chunk_type: str = (metadata.get("chunk_type") or "").strip().lower()
         chunk_index: int = int(getattr(c, "chunk_index", 0) or 0)
 
+        # 优先从 metadata 或 parent_chunk_id 获取父块索引
         parent_idx: Optional[int] = None
-        if chunk_type == "child":
-            for key in ("parent_chunk_index", "parent_index", "parent_id"):
-                if key in metadata and metadata[key] is not None:
-                    try:
-                        parent_idx = int(metadata[key])
-                        break
-                    except Exception:
-                        parent_idx = None
-            if parent_idx is None:
-                top_parent = getattr(c, "parent_chunk_id", None)
-                if top_parent is not None:
-                    try:
-                        parent_idx = int(top_parent)
-                    except Exception:
-                        parent_idx = None
+        for key in ("parent_chunk_index", "parent_index", "parent_id"):
+            if key in metadata and metadata[key] is not None:
+                try:
+                    parent_idx = int(metadata[key])
+                    break
+                except Exception:
+                    parent_idx = None
+        if parent_idx is None:
+            top_parent = getattr(c, "parent_chunk_id", None)
+            if top_parent is not None:
+                try:
+                    parent_idx = int(top_parent)
+                except Exception:
+                    parent_idx = None
 
-        if chunk_type == "parent" or not chunk_type:
-            parents[chunk_index] = c
-        elif chunk_type == "child" and parent_idx is not None:
+        # 判定 parent/child：有 parent_idx 即为 child；或 metadata 明确为 child
+        is_child = chunk_type == "child" or parent_idx is not None
+        if is_child and parent_idx is not None:
             children_by_parent_index.setdefault(parent_idx, []).append(c)
+        else:
+            parents[chunk_index] = c
 
     flat_children_count = sum(len(v) for v in children_by_parent_index.values())
     logging.info(
         f"[_build_records_and_chunks] 解析结果: parent 块 {len(parents)} 个, child 块 {flat_children_count} 个"
     )
-    if flat_children_count == 0:
-        logging.warning(
-            "[_build_records_and_chunks] 无 child 块，仅 parent 块不会被写入。"
-            "请检查 ChunkerService parent_child 策略是否返回 child 类型。"
-        )
-
-    records: List[Dict[str, Any]] = []
-    chunk_models: List[DocumentChunkModel] = []
-
-    embedding_model_name = os.getenv("EMBEDDING_MODEL", "jinaai/jina-embeddings-v5-text-small")
 
     # 先按顺序收集所有 child 的 (chunk, parent_content)，再批量 encode
     flat_children: List[Tuple[Any, str]] = []
@@ -651,6 +646,25 @@ def _build_records_and_chunks(
         parent_content: str = getattr(parent_chunk, "content", "") or ""
         for c in children_by_parent_index.get(parent_index, []):
             flat_children.append((c, parent_content))
+
+    # Fallback：若无 child 块但有 parent 块，将每个 parent 视为自引用（parent 即 child），确保有数据可写入
+    if not flat_children and parents:
+        c0 = next(iter(parents.values()))
+        meta0 = getattr(c0, "metadata", {}) or {}
+        logging.warning(
+            "[_build_records_and_chunks] 无 child 块，fallback 为将 parent 块作为可写入块。"
+            f"首个 chunk 诊断: metadata.keys={list(meta0.keys())} chunk_type={meta0.get('chunk_type')!r} "
+            f"parent_chunk_id={getattr(c0, 'parent_chunk_id', None)}"
+        )
+        for parent_index in sorted(parents.keys()):
+            parent_chunk = parents[parent_index]
+            parent_content = getattr(parent_chunk, "content", "") or ""
+            flat_children.append((parent_chunk, parent_content))
+
+    records: List[Dict[str, Any]] = []
+    chunk_models: List[DocumentChunkModel] = []
+
+    embedding_model_name = os.getenv("EMBEDDING_MODEL", "jinaai/jina-embeddings-v5-text-small")
 
     contents = [getattr(c, "content", "") or "" for c, _ in flat_children]
     to_encode = [t for t in contents if t]

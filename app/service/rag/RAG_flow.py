@@ -10,7 +10,7 @@ import logging
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import requests
 
 # 导入项目的retrieval_service模块
@@ -211,11 +211,17 @@ class RAGFlow:
 
         return {"doc_id": doc_id, "doc_title": doc_title}
 
-    def retrieve_documents(self, query: str, collect_trace: bool = False) -> Any:
+    def retrieve_documents(self, query: str, collect_trace: bool = False, doc_id: Union[int, List[int], None] = None,
+        kb_id: Union[int, List[int], None] = None,
+        security_level: Union[int, List[int], None] = None,) -> Any:
         """
         执行多路召回检索
         Args:
             query: 查询文本
+            collect_trace:
+            doc_id: 文档ID
+            kb_id: 知识库分类
+            security_level: 访问级别
         Returns:
             检索结果列表
         """
@@ -244,7 +250,10 @@ class RAGFlow:
             try:
                 hybrid_results = retrieval_service.hybrid_search(
                     query=query,
-                    top_k=15  # 减少返回结果数量，提高性能
+                    top_k=15,  # 减少返回结果数量，提高性能
+                    doc_id=doc_id,
+                    kb_id=kb_id,
+                    security_level=security_level
                 )
                 logger.info(f"混合检索结果数: {len(hybrid_results)}")
                 _print_info(f"混合检索结果数: {len(hybrid_results)}")
@@ -276,7 +285,10 @@ class RAGFlow:
                 try:
                     semantic_results = retrieval_service.semantic_search(
                         query=query,
-                        top_k=12  # 减少返回结果数量，提高性能
+                        top_k=12,  # 减少返回结果数量，提高性能
+                        doc_id=doc_id,
+                        kb_id=kb_id,
+                        security_level=security_level
                     )
                     logger.info(f"语义检索结果数: {len(semantic_results)}")
                     _print_info(f"语义检索结果数: {len(semantic_results)}")
@@ -308,7 +320,10 @@ class RAGFlow:
                 try:
                     keyword_results = retrieval_service.keyword_search(
                         query=query,
-                        top_k=12  # 减少返回结果数量，提高性能
+                        top_k=12,  # 减少返回结果数量，提高性能
+                        doc_id=doc_id,
+                        kb_id=kb_id,
+                        security_level=security_level
                     )
                     logger.info(f"关键词检索结果数: {len(keyword_results)}")
                     _print_info(f"关键词检索结果数: {len(keyword_results)}")
@@ -592,10 +607,19 @@ class RAGFlow:
         logger.info(f"开始生成最终响应，查询: {query}")
         _print_info("\n=== 生成响应 ===")
 
+        system_prompt = """
+        你是一位顶级知识库引擎，擅长将复杂知识以清晰、严谨、结构化的方式呈现。
+            任务：整合、提炼、结构化知识库信息。
+            行动：逻辑重组原文要点，用专业语言归纳总结，形成连贯完整的回答。
+            要求：
+                1. 专业、严谨、客观、精炼。
+                2. 使用Markdown格式化。
+                3. 数学公式使用LaTeX格式。
+        """
         messages = [
             {
                 "role": "system",
-                "content": "你是一个专业的论文问答助手。请根据提供的论文中的信息，简洁明了地回答用户的问题。要求：\n1. 回答要准确、重点突出，基于提供的信息\n2. 保持回答简洁，避免冗长的表述和不必要的细节，但重要内容不能缺失\n3. 如果信息不足，请直接说明无法回答\n4. 不要添加额外的推测或内容\n5. 使用清晰、专业的语言风格\n6. 如果是实验方法型的问题，需要准确概况出论文所使用的核心实验方法"
+                "content": system_prompt
 
             },
             {
@@ -621,12 +645,18 @@ class RAGFlow:
         original_query: str,
         sample_id: Optional[str] = None,
         return_trace: bool = False,
+        doc_id: Union[int, List[int], None] = None,
+        kb_id: Union[int, List[int], None] = None,
+        security_level: Union[int, List[int], None] = None,
     ):
         """
         执行完整的RAG流程
         Args:
             original_query: 用户原始查询
             sample_id: 可选的样本ID（用于评估时关联 QA.json）
+            doc_id: 文档ID
+            kb_id: 知识库分类
+            security_level: 访问级别
             return_trace: 是否返回本次流程的完整trace结构
         """
         start_time = datetime.now()
@@ -666,7 +696,7 @@ class RAGFlow:
             }
 
             # 1. 检索文档（第一轮使用原始 query，后续轮次可能使用改写后的 query）
-            results, retrieval_record = self.retrieve_documents(current_query, collect_trace=True)
+            results, retrieval_record = self.retrieve_documents(current_query, collect_trace=True, doc_id=doc_id, kb_id=kb_id, security_level=security_level)
             iteration_record["retrieval"] = retrieval_record
 
             if not results:

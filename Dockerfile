@@ -11,6 +11,7 @@ WORKDIR /app
 
 COPY . .
 
+RUN pip install peft
 
 # 1. 安装 git（如果基础镜像里没有的话）
 RUN apt-get update && apt-get install -y git openssh-client && rm -rf /var/lib/apt/lists/*
@@ -26,7 +27,6 @@ RUN mkdir -p -m 0700 ~/.ssh \
 ARG REFRESH_DATE=1
 RUN --mount=type=ssh,required pip install --no-cache-dir -r requirement_customer.txt
 
-RUN pip install peft
 
 EXPOSE 5010
 

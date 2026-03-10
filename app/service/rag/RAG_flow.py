@@ -5,7 +5,6 @@
 RAG流程实现
 根据提供的流程图，实现完整的检索增强生成流程
 """
-
 import logging
 import json
 import os

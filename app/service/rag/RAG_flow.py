@@ -10,6 +10,7 @@ import logging
 import json
 import os
 import time
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -102,6 +103,28 @@ class DeepSeekClient:
         """
         调用DeepSeek API进行对话完成
         """
+        # 通过环境变量提供可控采样参数，默认尽量确定性以提升复现性
+        def _get_env_float(name: str, default: float) -> float:
+            try:
+                v = os.getenv(name, "").strip()
+                return float(v) if v != "" else float(default)
+            except Exception:
+                return float(default)
+
+        def _get_env_int(name: str) -> Optional[int]:
+            try:
+                v = os.getenv(name, "").strip()
+                if v == "":
+                    return None
+                return int(v)
+            except Exception:
+                return None
+
+        temperature = _get_env_float("DEEPSEEK_TEMPERATURE", 0.0)
+        top_p = _get_env_float("DEEPSEEK_TOP_P", 1.0)
+        seed = _get_env_int("DEEPSEEK_SEED")
+        timeout_s = _get_env_float("DEEPSEEK_TIMEOUT_SECONDS", 30.0)
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -109,8 +132,13 @@ class DeepSeekClient:
 
         payload = {
             "model": self.model,
-            "messages": messages
+            "messages": messages,
+            "temperature": temperature,
+            "top_p": top_p,
         }
+        # seed 兼容性不保证：仅在显式配置时发送
+        if seed is not None:
+            payload["seed"] = seed
 
         try:
             logger.info("调用DeepSeek API进行对话完成")
@@ -118,7 +146,7 @@ class DeepSeekClient:
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=timeout_s
             )
             response.raise_for_status()
             result = response.json()
@@ -140,6 +168,57 @@ class RAGFlow:
         self.max_iterations = 3
         # 最多允许的 query 改写轮数
         self.max_rewrite_rounds = 2
+
+        # 记录上一轮 evidence 抽取结果，供 Judge 规则与 trace 使用
+        self._last_evidence_items: List[Dict[str, Any]] = []
+
+    def _safe_json_loads(self, text: str) -> Optional[Dict[str, Any]]:
+        """尽力解析 LLM 输出的 JSON。"""
+        if not text:
+            return None
+        s = str(text).strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            start = s.find("{")
+            end = s.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                s = s[start : end + 1]
+        try:
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+
+    def _extract_anchors(self, query: str) -> List[str]:
+        """
+        从 query 中提取“锚点”用于防漂移：方法名/缩写/符号等（不依赖题型标签）。
+        仅提取拉丁字母开头的 token（如 ACAttack、SAM2.1、L_st）。
+        """
+        if not query:
+            return []
+        anchors = re.findall(r"[A-Za-z][A-Za-z0-9_.\-]{1,}", query)
+        seen = set()
+        out: List[str] = []
+        for a in anchors:
+            if a not in seen:
+                seen.add(a)
+                out.append(a)
+        return out[:12]
+
+    def _enforce_anchors(self, rewritten_query: str, anchors: List[str], original_query: str) -> str:
+        """若改写丢失关键锚点，则回退或补齐，避免扩题导致检索漂移。"""
+        rq = (rewritten_query or "").strip()
+        if not rq:
+            return original_query
+        if not anchors:
+            return rq
+
+        missing = [a for a in anchors if a not in rq]
+        if not missing:
+            return rq
+
+        if len(rq) > max(80, len(original_query) * 2):
+            return original_query
+        return (rq + " " + " ".join(missing)).strip()
 
     def _estimate_rewrite_difference(self, original_query: str, rewritten_query: str) -> Dict[str, float]:
         """
@@ -176,11 +255,15 @@ class RAGFlow:
         messages = [
             {
                 "role": "system",
-                "content": "你是一个专业的学术查询理解和改写助手，专注于提高学术论文检索的效果。请严格遵循以下要求：\n1. 深入分析用户的学术查询意图，识别核心实体、数值和关键术语\n2. 如果有上下文，结合上下文理解用户的真实研究需求\n3. 在严格保留原始问题语义和关键实体不变的前提下，对查询进行适度的结构化和扩展，使其更适合检索\n4. 改写应避免只是做同义词替换（改动过小），也不要将问题改成完全不同的场景或任务（改动过大）\n5. 适当增加能够帮助检索的限定词（如方法名称、指标、数据集名称等），使查询更加明确、具体、全面\n6. 仅输出改写后的查询文本，不要添加任何其他说明或解释\n7. 保持查询简洁，避免冗余信息"
+                "content": "你是一个专业的学术查询理解和改写助手，专注于提高学术论文检索的效果。请严格遵循以下要求：\n1. 深入分析用户的学术查询意图，识别核心实体、数值和关键术语\n2. 如果有上下文，结合上下文理解用户的真实研究需求\n3. 在严格保留原始问题语义和关键实体不变的前提下，对查询进行结构化改写，使其更适合检索\n4. 仅做“检索友好化”的改写：不要引入新的子问题/新任务（禁止扩题），不要要求额外解释（如“具体设计如何”）\n5. 必须保留原问题中的关键锚点（方法名/缩写/符号），尤其是英文缩写与专有名词\n6. 改写输出尽量短，偏关键词/短语，避免长句冗余\n7. 仅输出改写后的查询文本，不要添加任何其他说明或解释"
             },
             {
                 "role": "user",
-                "content": f"原始查询: {original_query}{f'\n上下文: {context}' if context else ''}\n\n改写后的查询:"
+                "content": (
+                    f"原始查询: {original_query}\n上下文: {context}\n\n改写后的查询:"
+                    if context
+                    else f"原始查询: {original_query}\n\n改写后的查询:"
+                )
             }
         ]
 
@@ -192,6 +275,8 @@ class RAGFlow:
             return original_query
 
         rewritten_query = rewritten_query.strip()
+        anchors = self._extract_anchors(original_query)
+        rewritten_query = self._enforce_anchors(rewritten_query, anchors, original_query)
         diff_stats = self._estimate_rewrite_difference(original_query, rewritten_query)
         overlap = diff_stats.get("overlap_ratio", 0.0)
         length_ratio = diff_stats.get("length_ratio", 1.0)
@@ -390,46 +475,127 @@ class RAGFlow:
 
     def summarize_single_chunk(self, chunk_content: str) -> str:
         """
-        对单个chunk进行summary，特别优化表格处理
-        返回空时重试最多2次（共最多3次调用），减少偶发空响应导致的回退长原文。
+        兼容旧接口：保留该方法名，但内部改为“证据抽取”（仅返回可用于融合的短文本）。
         """
         try:
-            # 检测是否包含表格内容
-            if '<table>' in chunk_content.lower() or '|' in chunk_content:
-                # 表格内容使用专门的prompt
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "你是一个专业的学术内容总结助手，特别擅长处理表格数据。请严格遵循以下要求：\n1. 如果内容包含表格，优先提取表格中的关键数据和趋势\n2. 用简洁的文字描述表格的主要发现和数据模式\n3. 突出重要的数值对比和结论\n4. 保持总结准确、简洁，避免冗长描述\n5. 如果是实验结果表格，重点说明方法间的性能对比"
-                    },
-                    {
-                        "role": "user",
-                        "content": f"请总结以下包含表格的学术内容：\n{chunk_content}\n\n表格总结："
-                    }
-                ]
-            else:
-                # 普通内容使用原有prompt
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "你是一个专业的学术内容总结助手。请严格遵循以下要求：\n1. 阅读以下学术论文片段，提取核心信息和关键论点\n2. 总结必须准确、简洁，保留所有重要的学术观点和事实\n3. 不添加任何原文中没有的信息或个人解读\n4. 使用清晰的语言结构，突出重点内容\n5. 保持总结长度适中，避免过于冗长或过于简略\n6. 如果内容是论文摘要，保留其主要结构和核心结论"
-                    },
-                    {
-                        "role": "user",
-                        "content": f"请总结以下学术内容：\n{chunk_content}\n\n总结："
-                    }
-                ]
-            summary = None
-            for attempt in range(3):
-                summary = self.deepseek.chat_completion(messages)
-                if summary and summary.strip():
-                    return summary.strip()
-                if attempt < 2:
-                    time.sleep(1)
-            return chunk_content.strip()
+            # 无 query 时只能退化为截断原文，避免丢失数字/符号
+            return _truncate_for_fusion(chunk_content.strip())
         except Exception as e:
             logger.error(f"单个chunk summary失败: {str(e)}")
-            return chunk_content.strip()
+            return _truncate_for_fusion(chunk_content.strip())
+
+    def extract_evidence_single_chunk(self, query: str, chunk_content: str) -> Dict[str, Any]:
+        """
+        对单个 chunk 做“证据抽取 + 关键事实提取”，优先保留原文数字/符号，降低多次调用导致的信息丢失。
+        返回结构化 dict，失败时回退为截断原文作为 evidence。
+        """
+        content = (chunk_content or "").strip()
+        if not content:
+            return {"evidence_sentences": [], "key_facts": [], "relevance": "", "raw": ""}
+
+        messages = [
+            {
+                "role": "system",
+                "content": "你是一个严谨的学术证据抽取助手。请从给定的论文片段中抽取能直接回答问题的证据。\n"
+                "要求：\n"
+                "1) 优先原文拷贝，必须保留所有数字、符号、等号与变量（例如 s = 5、L_st 等）\n"
+                "2) 只输出严格 JSON（不要代码块、不要多余文本）\n"
+                "3) evidence_sentences 给出 1-3 句最相关原文（尽量短）\n"
+                "4) key_facts 从证据句中提取关键事实点（短字符串列表），例如 \"s=5\"、\"T_obs=9\"、\"kernel=3x3\" 等\n"
+                "5) relevance 用一句话说明证据与问题的对应关系",
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"问题: {query}\n\n论文片段:\n{content}\n\n"
+                    "请输出 JSON，格式如下：\n"
+                    "{\n"
+                    "  \"evidence_sentences\": [\"...\"],\n"
+                    "  \"key_facts\": [\"...\"],\n"
+                    "  \"relevance\": \"...\"\n"
+                    "}\n"
+                ),
+            },
+        ]
+
+        raw = self.deepseek.chat_completion(messages) or ""
+        obj = self._safe_json_loads(raw)
+        if obj is None:
+            evidence = _truncate_for_fusion(content)
+            # 尽力抽取常见等式/数字作为 key_facts
+            key_facts: List[str] = []
+            try:
+                # 例如 s=5 / T_obs=9 / K=10
+                key_facts.extend(re.findall(r"\b[A-Za-z]\w*\s*=\s*\d+(\.\d+)?\b", evidence))
+            except Exception:
+                pass
+            if not key_facts:
+                nums = re.findall(r"\b\d+(\.\d+)?\b", evidence)
+                flat_nums: List[str] = []
+                for n in nums[:5]:
+                    if isinstance(n, tuple):
+                        flat_nums.append(str(n[0]))
+                    else:
+                        flat_nums.append(str(n))
+                key_facts = flat_nums
+            return {"evidence_sentences": [evidence], "key_facts": key_facts, "relevance": "", "raw": raw.strip()}
+
+        evidence_sentences = obj.get("evidence_sentences") if isinstance(obj.get("evidence_sentences"), list) else []
+        key_facts = obj.get("key_facts") if isinstance(obj.get("key_facts"), list) else []
+        relevance = obj.get("relevance") if isinstance(obj.get("relevance"), str) else ""
+
+        ev_clean: List[str] = []
+        for s in evidence_sentences[:3]:
+            if isinstance(s, str) and s.strip():
+                ev_clean.append(_truncate_for_fusion(s.strip(), max_chars=400))
+
+        kf_clean: List[str] = []
+        for k in key_facts[:8]:
+            if isinstance(k, str) and k.strip():
+                kf_clean.append(k.strip())
+
+        if not ev_clean:
+            ev_clean = [_truncate_for_fusion(content)]
+
+        return {"evidence_sentences": ev_clean, "key_facts": kf_clean, "relevance": relevance.strip(), "raw": raw.strip()}
+
+    def _rule_based_sufficiency(self, query: str, fused_info: str) -> tuple[bool, str]:
+        """
+        不依赖题型标签的规则优先 sufficiency 判定：
+        - 若 evidence 已抽出 key_facts 或命中锚点+数值/等式，则直接判足够，避免 LLM Judge 误判触发改写。
+        返回 (sufficient, reason)。
+        """
+        anchors = self._extract_anchors(query)
+        evidence_items = getattr(self, "_last_evidence_items", []) or []
+
+        # 1) 只要抽取到了 key_facts（如 s=5），通常就足够尝试回答
+        for it in evidence_items:
+            kf = it.get("key_facts")
+            if isinstance(kf, list) and any(isinstance(x, str) and x.strip() for x in kf):
+                return True, "rule:key_facts_present"
+
+        # 2) 融合信息中出现锚点 + 数值/等式 → 足够
+        text = (fused_info or "").strip()
+        if text:
+            has_anchor = any(a in text for a in anchors) if anchors else False
+            has_number_or_eq = bool(re.search(r"(\b\d+(\.\d+)?\b|=|×|x|帧|epoch|mAP|EAO|IoU)", text))
+            if has_anchor and has_number_or_eq:
+                return True, "rule:anchor_and_number"
+
+        # 3) evidence 句子中出现锚点 + 数值/等式 → 足够
+        for it in evidence_items:
+            ev = it.get("evidence_sentences")
+            if not isinstance(ev, list):
+                continue
+            joined = "\n".join([s for s in ev if isinstance(s, str)])
+            if not joined.strip():
+                continue
+            has_anchor = any(a in joined for a in anchors) if anchors else False
+            has_number_or_eq = bool(re.search(r"(\b\d+(\.\d+)?\b|=|×|x|帧|epoch|mAP|EAO|IoU)", joined))
+            if has_anchor and has_number_or_eq:
+                return True, "rule:evidence_anchor_and_number"
+
+        return False, "rule:no_strong_signal"
 
     def summarize_and_aggregate(self, query: str, results: List[Any]) -> str:
         """
@@ -470,8 +636,8 @@ class RAGFlow:
         logger.info(f"过滤后结果数: {len(filtered_results)}")
         _print_info(f"过滤后结果数: {len(filtered_results)}")
 
-        # 3. 对每个chunk单独进行summary，避免上下文过长（并发调用以提升性能）
-        chunk_summaries: List[str] = []
+        # 3. 对每个chunk进行证据抽取，避免上下文过长（并发调用以提升性能）
+        chunk_evidences: List[str] = []
 
         # 预先收集需要处理的 chunk 信息
         indexed_chunks: List[Dict[str, Any]] = []
@@ -479,8 +645,19 @@ class RAGFlow:
             try:
                 score = getattr(result, "score", 0.0)
                 content = getattr(result, "content", "")
+                chunk_id = getattr(result, "chunk_id", None)
+                info = self._extract_doc_info_from_result(result)
                 if content:
-                    indexed_chunks.append({"index": i, "score": score, "content": content})
+                    indexed_chunks.append(
+                        {
+                            "index": i,
+                            "score": score,
+                            "content": content,
+                            "chunk_id": chunk_id,
+                            "doc_id": info.get("doc_id"),
+                            "doc_title": info.get("doc_title"),
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"预处理结果{i + 1}时出错: {str(e)}")
                 continue
@@ -499,10 +676,11 @@ class RAGFlow:
             f"\n开始并发summary处理，共 {len(indexed_chunks)} 个chunk，使用线程数: {max_workers}"
         )
 
-        index_to_summary: Dict[int, str] = {}
+        index_to_evidence: Dict[int, Dict[str, Any]] = {}
         index_to_score: Dict[int, float] = {}
+        index_to_meta: Dict[int, Dict[str, Any]] = {}
 
-        # 使用线程池并发调用 summarize_single_chunk
+        # 使用线程池并发调用 extract_evidence_single_chunk
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_index: Dict[concurrent.futures.Future, int] = {}
@@ -512,68 +690,113 @@ class RAGFlow:
                     score = item["score"]
                     content = item["content"]
                     index_to_score[idx] = score
+                    index_to_meta[idx] = {
+                        "chunk_id": item.get("chunk_id"),
+                        "doc_id": item.get("doc_id"),
+                        "doc_title": item.get("doc_title"),
+                    }
 
-                    logger.info(f"提交第{idx + 1}个chunk进行summary，分数: {score:.3f}")
-                    _print_info(f"提交第{idx + 1}个chunk进行summary，分数: {score:.3f}...")
+                    logger.info(f"提交第{idx + 1}个chunk进行证据抽取，分数: {score:.3f}")
+                    _print_info(f"提交第{idx + 1}个chunk进行证据抽取，分数: {score:.3f}...")
 
-                    future = executor.submit(self.summarize_single_chunk, content)
+                    future = executor.submit(self.extract_evidence_single_chunk, query, content)
                     future_to_index[future] = idx
 
                 for future in concurrent.futures.as_completed(future_to_index):
                     idx = future_to_index[future]
                     score = index_to_score.get(idx, 0.0)
                     try:
-                        chunk_summary = future.result()
-                        # summarize_single_chunk 已经在失败时回退为原文，这里只做最小检查
-                        if chunk_summary and isinstance(chunk_summary, str):
-                            index_to_summary[idx] = chunk_summary.strip()
+                        ev_obj = future.result()
+                        if isinstance(ev_obj, dict) and ev_obj.get("evidence_sentences"):
+                            index_to_evidence[idx] = ev_obj
                         else:
-                            # 极端情况下为空，再次回退为原文（截断后进融合）
-                            original_content = next(
-                                (item["content"] for item in indexed_chunks if item["index"] == idx),
-                                "",
-                            )
-                            index_to_summary[idx] = _truncate_for_fusion(original_content)
-                            logger.warning(
-                                f"第{idx + 1}个chunk summary 结果为空，使用原始内容回退（来自并发层校验）"
-                            )
+                            original_content = next((it["content"] for it in indexed_chunks if it["index"] == idx), "")
+                            index_to_evidence[idx] = {
+                                "evidence_sentences": [_truncate_for_fusion(original_content)],
+                                "key_facts": [],
+                                "relevance": "",
+                                "raw": "",
+                            }
+                            logger.warning(f"第{idx + 1}个chunk证据抽取为空，使用原始内容回退")
                     except Exception as e:
                         # 并发层异常，记录日志并回退为原文（截断后进融合）
                         original_content = next(
                             (item["content"] for item in indexed_chunks if item["index"] == idx),
                             "",
                         )
-                        index_to_summary[idx] = _truncate_for_fusion(original_content)
+                        index_to_evidence[idx] = {
+                            "evidence_sentences": [_truncate_for_fusion(original_content)],
+                            "key_facts": [],
+                            "relevance": "",
+                            "raw": "",
+                        }
                         logger.warning(
-                            f"第{idx + 1}个chunk并发summary任务失败，使用原始内容回退: {str(e)}"
+                            f"第{idx + 1}个chunk并发证据抽取任务失败，使用原始内容回退: {str(e)}"
                         )
         except Exception as e:
             # 线程池整体异常，记录日志并全部回退为原文（截断后进融合）
-            logger.error(f"并发summary整体失败，将全部使用原始内容回退: {str(e)}")
-            _print_warning("并发summary整体失败，将使用原始内容回退")
+            logger.error(f"并发证据抽取整体失败，将全部使用原始内容回退: {str(e)}")
+            _print_warning("并发证据抽取整体失败，将使用原始内容回退")
             for item in indexed_chunks:
                 idx = item["index"]
-                index_to_summary[idx] = _truncate_for_fusion(item.get("content", ""))
+                index_to_evidence[idx] = {
+                    "evidence_sentences": [_truncate_for_fusion(item.get("content", ""))],
+                    "key_facts": [],
+                    "relevance": "",
+                    "raw": "",
+                }
                 index_to_score[idx] = float(item.get("score", 0.0))
+                index_to_meta[idx] = {
+                    "chunk_id": item.get("chunk_id"),
+                    "doc_id": item.get("doc_id"),
+                    "doc_title": item.get("doc_title"),
+                }
 
-        # 按原始顺序构造 chunk_summaries，保持算法行为一致
+        # 按原始顺序构造 chunk_evidences，保持算法行为一致
+        evidence_items_for_judge: List[Dict[str, Any]] = []
         for i in range(len(filtered_results)):
-            if i in index_to_summary and i in index_to_score:
+            if i in index_to_evidence and i in index_to_score:
                 score = index_to_score[i]
-                chunk_summary = index_to_summary[i]
-                chunk_summaries.append(
-                    f"[结果{i + 1} 相关性分数: {score:.3f}]\n{chunk_summary}\n"
+                ev_obj = index_to_evidence[i]
+                meta = index_to_meta.get(i, {})
+                doc_title = meta.get("doc_title") or ""
+                chunk_id = meta.get("chunk_id")
+                key_facts = ev_obj.get("key_facts") if isinstance(ev_obj.get("key_facts"), list) else []
+                ev_sents = ev_obj.get("evidence_sentences") if isinstance(ev_obj.get("evidence_sentences"), list) else []
+                key_facts_str = ", ".join([x for x in key_facts if isinstance(x, str)])[:200]
+                ev_text = "\n".join([s for s in ev_sents if isinstance(s, str)])
+
+                evidence_items_for_judge.append(
+                    {
+                        "rank": i + 1,
+                        "chunk_id": chunk_id,
+                        "doc_title": doc_title,
+                        "score": score,
+                        "key_facts": key_facts,
+                        "evidence_sentences": ev_sents,
+                    }
                 )
 
-        if not chunk_summaries:
+                chunk_evidences.append(
+                    f"[结果{i + 1} 相关性分数: {score:.3f}]\n"
+                    f"doc_title: {doc_title}\n"
+                    f"chunk_id: {chunk_id}\n"
+                    f"key_facts: {key_facts_str}\n"
+                    f"evidence:\n{ev_text}\n"
+                )
+
+        # 存储上一轮 evidence，供 Judge 规则与 trace 使用
+        self._last_evidence_items = evidence_items_for_judge
+
+        if not chunk_evidences:
             logger.warning("所有检索结果处理后为空")
             _print_warning("警告: 所有检索结果处理后为空")
             return "检索结果处理后为空"
 
         # 4. 整合所有chunk的summary
-        combined_summaries = "\n".join(chunk_summaries)
-        logger.info(f"整合后的summary长度: {len(combined_summaries)} 字符")
-        _print_info(f"\n整合后的summary长度: {len(combined_summaries)} 字符")
+        combined_summaries = "\n".join(chunk_evidences)
+        logger.info(f"整合后的证据长度: {len(combined_summaries)} 字符")
+        _print_info(f"\n整合后的证据长度: {len(combined_summaries)} 字符")
 
         # 5. 使用DeepSeek进行最终信息融合
         logger.info("使用DeepSeek API进行最终信息融合...")
@@ -582,11 +805,11 @@ class RAGFlow:
         messages = [
             {
                 "role": "system",
-                "content": "你是一个专业的学术信息整合助手。请严格遵循以下要求：\n1. 仔细阅读用户的学术查询和提供的各段论文摘要\n2. 提取所有与查询直接相关的关键学术信息\n3. 忽略与查询无关的内容\n4. 将相关信息整合成一段连贯、逻辑清晰的文本\n5. 保持信息的准确性，不要添加任何检索结果中没有的内容\n6. 如果有多个相关观点，按重要性排序\n7. 如果没有相关信息，直接返回'未找到相关信息'\n8. 确保回答专业、准确，适合学术研究场景"
+                "content": "你是一个专业的学术信息整合助手。请严格遵循以下要求：\n1. 仔细阅读用户的学术查询和提供的证据片段（证据中可能包含关键数字/符号）\n2. 只基于证据回答，必须保留关键数字、符号、等号与变量（例如 s=5、L_st 等）\n3. 忽略与查询无关的内容\n4. 将相关信息整合成一段连贯、逻辑清晰的文本\n5. 保持信息的准确性，不要添加任何检索结果中没有的内容\n6. 如果没有相关信息，直接返回'未找到相关信息'\n7. 输出应尽量简洁，优先给出可直接回答问题的事实"
             },
             {
                 "role": "user",
-                "content": f"学术查询: {query}\n\n以下是各段论文内容的摘要，请基于这些信息整合出完整回答：\n{combined_summaries}\n\n整合后的回答："
+                "content": f"学术查询: {query}\n\n以下是各段论文内容的证据与关键事实，请基于这些信息整合出完整回答：\n{combined_summaries}\n\n整合后的回答："
             }
         ]
         fused_info = self.deepseek.chat_completion(messages)
@@ -601,7 +824,7 @@ class RAGFlow:
             _print_warning("信息融合失败，使用备用方案")
 
             # 改进的备用方案
-            backup_info = "\n".join(chunk_summaries[:5])  # 只使用前5个summary
+            backup_info = "\n".join(chunk_evidences[:5])  # 只使用前5个证据片段
 
             # 如果备用方案仍然为空，提供更明确的错误信息
             if not backup_info.strip():
@@ -648,7 +871,25 @@ class RAGFlow:
             logger.info(f"注意：信息较短 ({len(fused_info)} 字符)，但仍进行语义判断")
             _print_info(f"注意：信息较短 ({len(fused_info)} 字符)，但仍进行语义判断")
 
-        # 使用LLM进行智能语义判断
+        # 规则优先判定：减少 LLM Judge 误判触发改写
+        try:
+            sufficient_rule, rule_reason = self._rule_based_sufficiency(query, fused_info)
+            try:
+                self._last_judge_rule = rule_reason  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            if sufficient_rule:
+                logger.info(f"Judge规则判定为足够: {rule_reason}")
+                _print_info(f"Judge规则判定为足够: {rule_reason}")
+                try:
+                    self._last_judge_raw = f"规则判定: 足够 ({rule_reason})"  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                return True
+        except Exception as e:
+            logger.warning(f"Judge规则判定异常，将回退到LLM Judge: {str(e)}")
+
+        # 使用LLM进行智能语义判断（兜底）
         try:
             messages = [
                 {
@@ -841,6 +1082,25 @@ class RAGFlow:
             }
             # 记录完整的summary内容，便于测试报告中回溯
             iteration_record["summary_full"] = fused_info
+            # 记录 evidence 抽取结果（预览），便于评估稳定性
+            try:
+                iteration_record["evidence"] = [
+                    {
+                        "rank": it.get("rank"),
+                        "chunk_id": it.get("chunk_id"),
+                        "doc_title": it.get("doc_title"),
+                        "score": it.get("score"),
+                        "key_facts": it.get("key_facts"),
+                        "evidence_preview": (
+                            "\n".join(it.get("evidence_sentences", []))[:200]
+                            if isinstance(it.get("evidence_sentences"), list)
+                            else ""
+                        ),
+                    }
+                    for it in (getattr(self, "_last_evidence_items", []) or [])[:10]
+                ]
+            except Exception:
+                iteration_record["evidence"] = None
 
             # 3. Judge环节 - 使用智能语义判断
             logger.info("开始Judge环节")
@@ -852,6 +1112,11 @@ class RAGFlow:
                 iteration_record["judge_raw"] = getattr(self, "_last_judge_raw", None)
             except Exception:
                 iteration_record["judge_raw"] = None
+            # 记录Judge规则判定原因（如果有）
+            try:
+                iteration_record["judge_rule"] = getattr(self, "_last_judge_rule", None)
+            except Exception:
+                iteration_record["judge_rule"] = None
 
             # 记录本轮迭代信息
             trace["iterations"].append(iteration_record)

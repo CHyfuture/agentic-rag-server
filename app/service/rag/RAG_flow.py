@@ -8,9 +8,12 @@ RAG流程实现
 
 import logging
 import json
+import os
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+import concurrent.futures
 import requests
 
 # 导入项目的retrieval_service模块
@@ -48,6 +51,11 @@ _CURRENT_DIR = Path(__file__).resolve().parent
 _CURRENT_DIR.mkdir(parents=True, exist_ok=True)
 RAG_FLOW_LOG_PATH = _CURRENT_DIR / "rag_flow.log"
 
+# chunk summary 最大并发数，降低 API 限流/失败，缓解多跳多论文指标下降
+_SUMMARY_MAX_WORKERS = 4
+# 回退为原文时进入融合的最大字符数，避免长原文主导融合导致 Judge 误判不足
+_FALLBACK_CONTENT_MAX_CHARS = 800
+
 # 设置日志（仅写入 test 目录下的 rag_flow.log）
 logger = logging.getLogger("RAGFlow")
 logger.setLevel(logging.INFO)
@@ -67,6 +75,14 @@ def _append_trace_log(trace: Dict[str, Any]) -> None:
     except Exception as e:
         # 不影响主流程
         logger.error(f"写入RAG流程trace日志失败: {str(e)}")
+
+
+def _truncate_for_fusion(text: str, max_chars: int = _FALLBACK_CONTENT_MAX_CHARS) -> str:
+    """回退为原文时截断后再送入融合，避免超长原文主导上下文。"""
+    s = str(text).strip() if text is not None else ""
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars]
 
 
 # DeepSeek API配置
@@ -375,6 +391,7 @@ class RAGFlow:
     def summarize_single_chunk(self, chunk_content: str) -> str:
         """
         对单个chunk进行summary，特别优化表格处理
+        返回空时重试最多2次（共最多3次调用），减少偶发空响应导致的回退长原文。
         """
         try:
             # 检测是否包含表格内容
@@ -402,9 +419,13 @@ class RAGFlow:
                         "content": f"请总结以下学术内容：\n{chunk_content}\n\n总结："
                     }
                 ]
-            summary = self.deepseek.chat_completion(messages)
-            if summary and summary.strip():
-                return summary.strip()
+            summary = None
+            for attempt in range(3):
+                summary = self.deepseek.chat_completion(messages)
+                if summary and summary.strip():
+                    return summary.strip()
+                if attempt < 2:
+                    time.sleep(1)
             return chunk_content.strip()
         except Exception as e:
             logger.error(f"单个chunk summary失败: {str(e)}")
@@ -449,22 +470,100 @@ class RAGFlow:
         logger.info(f"过滤后结果数: {len(filtered_results)}")
         _print_info(f"过滤后结果数: {len(filtered_results)}")
 
-        # 3. 对每个chunk单独进行summary，避免上下文过长
-        chunk_summaries = []
+        # 3. 对每个chunk单独进行summary，避免上下文过长（并发调用以提升性能）
+        chunk_summaries: List[str] = []
+
+        # 预先收集需要处理的 chunk 信息
+        indexed_chunks: List[Dict[str, Any]] = []
         for i, result in enumerate(filtered_results):
             try:
-                score = getattr(result, 'score', 0.0)
-                content = getattr(result, 'content', '')
+                score = getattr(result, "score", 0.0)
+                content = getattr(result, "content", "")
                 if content:
-                    logger.info(f"正在处理第{i + 1}个chunk，分数: {score:.3f}")
-                    _print_info(f"处理第{i + 1}个chunk，分数: {score:.3f}...")
-                    # 对单个chunk进行summary
-                    chunk_summary = self.summarize_single_chunk(content)
-                    if chunk_summary:
-                        chunk_summaries.append(f"[结果{i + 1} 相关性分数: {score:.3f}]\n{chunk_summary}\n")
+                    indexed_chunks.append({"index": i, "score": score, "content": content})
             except Exception as e:
-                logger.warning(f"处理结果{i + 1}时出错: {str(e)}")
+                logger.warning(f"预处理结果{i + 1}时出错: {str(e)}")
                 continue
+
+        if not indexed_chunks:
+            logger.warning("所有检索结果在预处理阶段即为空")
+            _print_warning("警告: 所有检索结果在预处理阶段即为空")
+            return "检索结果处理后为空"
+
+        # 计算合适的并发线程数，避免过多并发压垮外部API
+        max_workers = min(len(indexed_chunks), _SUMMARY_MAX_WORKERS)
+        logger.info(
+            f"开始并发summary处理，共 {len(indexed_chunks)} 个chunk，使用线程数: {max_workers}"
+        )
+        _print_info(
+            f"\n开始并发summary处理，共 {len(indexed_chunks)} 个chunk，使用线程数: {max_workers}"
+        )
+
+        index_to_summary: Dict[int, str] = {}
+        index_to_score: Dict[int, float] = {}
+
+        # 使用线程池并发调用 summarize_single_chunk
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_index: Dict[concurrent.futures.Future, int] = {}
+
+                for item in indexed_chunks:
+                    idx = item["index"]
+                    score = item["score"]
+                    content = item["content"]
+                    index_to_score[idx] = score
+
+                    logger.info(f"提交第{idx + 1}个chunk进行summary，分数: {score:.3f}")
+                    _print_info(f"提交第{idx + 1}个chunk进行summary，分数: {score:.3f}...")
+
+                    future = executor.submit(self.summarize_single_chunk, content)
+                    future_to_index[future] = idx
+
+                for future in concurrent.futures.as_completed(future_to_index):
+                    idx = future_to_index[future]
+                    score = index_to_score.get(idx, 0.0)
+                    try:
+                        chunk_summary = future.result()
+                        # summarize_single_chunk 已经在失败时回退为原文，这里只做最小检查
+                        if chunk_summary and isinstance(chunk_summary, str):
+                            index_to_summary[idx] = chunk_summary.strip()
+                        else:
+                            # 极端情况下为空，再次回退为原文（截断后进融合）
+                            original_content = next(
+                                (item["content"] for item in indexed_chunks if item["index"] == idx),
+                                "",
+                            )
+                            index_to_summary[idx] = _truncate_for_fusion(original_content)
+                            logger.warning(
+                                f"第{idx + 1}个chunk summary 结果为空，使用原始内容回退（来自并发层校验）"
+                            )
+                    except Exception as e:
+                        # 并发层异常，记录日志并回退为原文（截断后进融合）
+                        original_content = next(
+                            (item["content"] for item in indexed_chunks if item["index"] == idx),
+                            "",
+                        )
+                        index_to_summary[idx] = _truncate_for_fusion(original_content)
+                        logger.warning(
+                            f"第{idx + 1}个chunk并发summary任务失败，使用原始内容回退: {str(e)}"
+                        )
+        except Exception as e:
+            # 线程池整体异常，记录日志并全部回退为原文（截断后进融合）
+            logger.error(f"并发summary整体失败，将全部使用原始内容回退: {str(e)}")
+            _print_warning("并发summary整体失败，将使用原始内容回退")
+            for item in indexed_chunks:
+                idx = item["index"]
+                index_to_summary[idx] = _truncate_for_fusion(item.get("content", ""))
+                index_to_score[idx] = float(item.get("score", 0.0))
+
+        # 按原始顺序构造 chunk_summaries，保持算法行为一致
+        for i in range(len(filtered_results)):
+            if i in index_to_summary and i in index_to_score:
+                score = index_to_score[i]
+                chunk_summary = index_to_summary[i]
+                chunk_summaries.append(
+                    f"[结果{i + 1} 相关性分数: {score:.3f}]\n{chunk_summary}\n"
+                )
 
         if not chunk_summaries:
             logger.warning("所有检索结果处理后为空")

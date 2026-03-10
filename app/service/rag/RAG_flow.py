@@ -526,10 +526,21 @@ class RAGFlow:
         _print_info(f"查询: {query}")
         _print_info(f"可用信息长度: {len(fused_info)} 字符")
 
+        # 默认清空本轮 Judge 原始输出记录
+        try:
+            self._last_judge_raw = None  # type: ignore[attr-defined]
+        except Exception:
+            # 如果属性设置失败，不影响主流程
+            pass
+
         # 只对完全空的信息进行过滤，允许短答案
         if not fused_info or fused_info.strip() == "":
             logger.warning("判断结果: 信息为空，不足")
             _print_warning("判断结果: 信息为空，不足")
+            try:
+                self._last_judge_raw = "信息为空，被直接判定为不足"  # type: ignore[attr-defined]
+            except Exception:
+                pass
             return False
 
         # 特殊情况：如果信息非常短但可能是有效答案
@@ -554,15 +565,22 @@ class RAGFlow:
             judgment = self.deepseek.chat_completion(messages)
 
             if judgment:
-                # 清理和标准化返回结果
-                judgment = judgment.strip().lower()
-                logger.info(f"判断结果: {judgment}")
-                _print_info(f"判断结果: {judgment}")
+                # 保留原始输出，便于后续在trace中展示
+                raw_judgment = str(judgment).strip()
+                try:
+                    self._last_judge_raw = raw_judgment  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+                # 清理和标准化返回结果用于逻辑分支
+                normalized = raw_judgment.strip().lower()
+                logger.info(f"判断结果: {normalized}")
+                _print_info(f"判断结果: {normalized}")
 
                 # 更宽松的结果处理
-                if "足够" in judgment or "sufficient" in judgment:
+                if "足够" in normalized or "sufficient" in normalized:
                     return True
-                elif "不足" in judgment or "insufficient" in judgment:
+                elif "不足" in normalized or "insufficient" in normalized:
                     return False
                 else:
                     # 如果返回格式不符合要求，默认认为信息足够，尝试生成响应
@@ -572,12 +590,20 @@ class RAGFlow:
             else:
                 logger.warning("LLM判断失败，默认认为信息足够，尝试生成响应")
                 _print_warning("LLM判断失败，默认认为信息足够，尝试生成响应")
+                try:
+                    self._last_judge_raw = "LLM调用失败，按默认策略判定为足够"  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 # API调用失败时，默认认为信息足够，不中断流程
                 return True
         except Exception as e:
             logger.error(f"判断环节出错: {str(e)}")
             _print_warning(f"判断环节出错: {str(e)}")
             # 出错时默认认为信息足够，不中断流程
+            try:
+                self._last_judge_raw = f"Judge环节异常: {str(e)}"  # type: ignore[attr-defined]
+            except Exception:
+                pass
             return True
 
     def generate_response(self, query: str, fused_info: str) -> str:
@@ -714,12 +740,19 @@ class RAGFlow:
                 "length": len(fused_info),
                 "preview": fused_info[:200],
             }
+            # 记录完整的summary内容，便于测试报告中回溯
+            iteration_record["summary_full"] = fused_info
 
             # 3. Judge环节 - 使用智能语义判断
             logger.info("开始Judge环节")
             _print_info("\nJudge环节：")
             sufficient = self.judge_information_sufficiency(current_query, fused_info)
             iteration_record["judge_sufficient"] = sufficient
+            # 记录Judge原始输出文本（如果有）
+            try:
+                iteration_record["judge_raw"] = getattr(self, "_last_judge_raw", None)
+            except Exception:
+                iteration_record["judge_raw"] = None
 
             # 记录本轮迭代信息
             trace["iterations"].append(iteration_record)

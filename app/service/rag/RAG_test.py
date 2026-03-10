@@ -184,6 +184,13 @@ class CorrectedRAGEvaluator:
             'RAG流程详情': trace,
         }
 
+        # 从 RAG trace 中提取少量汇总字段，便于在 HTML 报告中快速访问
+        if isinstance(trace, dict):
+            iterations = trace.get('iterations', []) or []
+            result['RAG最终查询'] = trace.get('final_query')
+            result['RAG迭代次数'] = len(iterations)
+            result['RAG查询改写次数'] = trace.get('rewrite_rounds', 0)
+
         # 补充标准chunk和检索到的chunk信息，便于对比
         standard_chunks = []
         for doc in case.get('relevant_documents', []):
@@ -755,6 +762,11 @@ class CorrectedRAGEvaluator:
         type_stats = report.get('按问题类型分析', {})
         details = report.get('详细测试结果', [])
 
+        # 展示用的一些上限配置，避免HTML过大
+        MAX_RETRIEVAL_DISPLAY_PER_TYPE = 5
+        MAX_MERGED_DISPLAY = 10
+        MAX_SUMMARY_PREVIEW_CHARS = 400
+
         def esc(s: Any) -> str:
             return (
                 str(s)
@@ -861,8 +873,9 @@ class CorrectedRAGEvaluator:
             html_parts.append("<details>")
             html_parts.append(f"<summary>{esc(summary_title)}</summary>")
 
-            # 基本信息
-            html_parts.append("<h3>基本信息</h3>")
+            # 基本信息（可折叠）
+            html_parts.append("<details>")
+            html_parts.append("<summary>基本信息</summary>")
             html_parts.append("<table>")
             html_parts.append("<tr><th>字段</th><th>内容</th></tr>")
             html_parts.append(f"<tr><td>sample_id</td><td>{esc(sample_id)}</td></tr>")
@@ -877,9 +890,11 @@ class CorrectedRAGEvaluator:
             html_parts.append(f"<tr><td>论文题目</td><td>{esc(paper_titles)}</td></tr>")
             html_parts.append(f"<tr><td>耗时(秒)</td><td>{esc(round(item.get('耗时', 0.0), 3))}</td></tr>")
             html_parts.append("</table>")
+            html_parts.append("</details>")
 
-            # 指标信息
-            html_parts.append("<h3>评估指标</h3>")
+            # 指标信息（可折叠）
+            html_parts.append("<details>")
+            html_parts.append("<summary>评估指标</summary>")
             html_parts.append("<table>")
             html_parts.append("<tr><th>指标</th><th>数值</th></tr>")
             for k, v in metrics.items():
@@ -887,11 +902,13 @@ class CorrectedRAGEvaluator:
                     continue
                 html_parts.append(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>")
             html_parts.append("</table>")
+            html_parts.append("</details>")
 
             # 标准chunk信息
             std_chunks = item.get("标准chunk信息", [])
             if std_chunks:
-                html_parts.append("<h3>标准chunk信息</h3>")
+                html_parts.append("<details>")
+                html_parts.append("<summary>标准chunk信息</summary>")
                 html_parts.append("<table>")
                 html_parts.append("<tr><th>doc_id</th><th>doc_title</th><th>标准chunk文本</th></tr>")
                 for c in std_chunks:
@@ -903,11 +920,13 @@ class CorrectedRAGEvaluator:
                         "</tr>"
                     )
                 html_parts.append("</table>")
+                html_parts.append("</details>")
 
             # 检索到的chunk信息
             retrieved_chunks = item.get("检索到的chunk信息", [])
             if retrieved_chunks:
-                html_parts.append("<h3>检索到的chunk信息（来自RAG流程trace的最终一轮）</h3>")
+                html_parts.append("<details>")
+                html_parts.append("<summary>检索到的chunk信息（来自RAG流程trace的最终一轮）</summary>")
                 html_parts.append("<table>")
                 html_parts.append("<tr><th>rank</th><th>doc_id</th><th>doc_title</th><th>score</th><th>chunk预览</th></tr>")
                 for c in retrieved_chunks:
@@ -921,11 +940,13 @@ class CorrectedRAGEvaluator:
                         "</tr>"
                     )
                 html_parts.append("</table>")
+                html_parts.append("</details>")
 
             # chunk级对齐详情
             align_details = metrics.get("chunk级对齐详情", [])
             if align_details:
-                html_parts.append("<h3>chunk级对齐详情</h3>")
+                html_parts.append("<details>")
+                html_parts.append("<summary>chunk级对齐详情</summary>")
                 html_parts.append("<table>")
                 html_parts.append(
                     "<tr>"
@@ -952,6 +973,149 @@ class CorrectedRAGEvaluator:
                         "</tr>"
                     )
                 html_parts.append("</table>")
+                html_parts.append("</details>")
+
+            # RAG 流程追踪
+            trace = item.get("RAG流程详情", {})
+            if isinstance(trace, dict) and trace:
+                html_parts.append("<details>")
+                html_parts.append("<summary>RAG流程追踪</summary>")
+
+                # 全局信息 & Query 改写历史
+                html_parts.append("<h3>全局信息 & Query改写历史</h3>")
+                html_parts.append("<table>")
+                html_parts.append("<tr><th>字段</th><th>内容</th></tr>")
+                html_parts.append(f"<tr><td>original_query</td><td>{esc(trace.get('original_query', ''))}</td></tr>")
+                html_parts.append(f"<tr><td>final_query</td><td>{esc(trace.get('final_query', ''))}</td></tr>")
+                html_parts.append(f"<tr><td>start_time</td><td>{esc(trace.get('start_time', ''))}</td></tr>")
+                html_parts.append(f"<tr><td>end_time</td><td>{esc(trace.get('end_time', ''))}</td></tr>")
+                html_parts.append(f"<tr><td>elapsed_seconds</td><td>{esc(trace.get('elapsed_seconds', ''))}</td></tr>")
+                html_parts.append(f"<tr><td>status</td><td>{esc(trace.get('status', ''))}</td></tr>")
+                html_parts.append(f"<tr><td>rewrite_rounds</td><td>{esc(trace.get('rewrite_rounds', 0))}</td></tr>")
+                html_parts.append(f"<tr><td>迭代次数</td><td>{esc(len(trace.get('iterations', []) or []))}</td></tr>")
+                html_parts.append("</table>")
+
+                rewrite_history = trace.get("rewrite_history") or []
+                if rewrite_history:
+                    html_parts.append("<details>")
+                    html_parts.append("<summary>查询改写历史</summary>")
+                    html_parts.append("<table>")
+                    html_parts.append("<tr><th>轮次</th><th>改写前</th><th>改写后</th></tr>")
+                    for rh in rewrite_history:
+                        html_parts.append(
+                            "<tr>"
+                            f"<td>{esc(rh.get('round', ''))}</td>"
+                            f"<td>{esc(rh.get('before', ''))}</td>"
+                            f"<td>{esc(rh.get('after', ''))}</td>"
+                            "</tr>"
+                        )
+                    html_parts.append("</table>")
+                    html_parts.append("</details>")
+
+                # 迭代详情
+                iterations = trace.get("iterations") or []
+                if iterations:
+                    html_parts.append("<h3>迭代详情</h3>")
+                    for it in iterations:
+                        it_index = it.get("iteration_index", "")
+                        it_query = it.get("query_used", "")
+                        judge_sufficient = it.get("judge_sufficient", None)
+                        judge_raw = it.get("judge_raw", None)
+                        if judge_sufficient is True:
+                            judge_label = "足够"
+                        elif judge_sufficient is False:
+                            judge_label = "不足"
+                        else:
+                            judge_label = "未知"
+
+                        summary_title = f"第{it_index}轮 | query={it_query} | Judge={judge_label}"
+                        html_parts.append("<details>")
+                        html_parts.append(f"<summary>{esc(summary_title)}</summary>")
+
+                        # 本轮概要信息
+                        html_parts.append("<table>")
+                        html_parts.append("<tr><th>字段</th><th>内容</th></tr>")
+                        html_parts.append(f"<tr><td>使用的查询</td><td>{esc(it_query)}</td></tr>")
+                        html_parts.append(f"<tr><td>Judge结果</td><td>{esc(judge_label)}</td></tr>")
+                        if judge_raw:
+                            html_parts.append(f"<tr><td>Judge原始输出</td><td>{esc(judge_raw)}</td></tr>")
+                        summary_preview = it.get("summary_preview") or {}
+                        html_parts.append(f"<tr><td>summary长度</td><td>{esc(summary_preview.get('length', ''))}</td></tr>")
+                        html_parts.append("</table>")
+
+                        # 检索阶段细节（各检索类型 + 合并结果）
+                        retrieval = it.get("retrieval") or {}
+                        if isinstance(retrieval, dict) and retrieval:
+                            # 各检索类型
+                            for mode_key, mode_label in [
+                                ("hybrid", "混合检索"),
+                                ("semantic", "语义检索"),
+                                ("keyword", "关键词检索"),
+                            ]:
+                                mode_info = retrieval.get(mode_key) or {}
+                                chunks = mode_info.get("chunks") or []
+                                total_count = mode_info.get("count", len(chunks))
+                                if chunks:
+                                    html_parts.append("<details>")
+                                    html_parts.append(
+                                        f"<summary>{esc(mode_label)}（共{total_count}条，显示前{MAX_RETRIEVAL_DISPLAY_PER_TYPE}条）</summary>"
+                                    )
+                                    html_parts.append("<table>")
+                                    html_parts.append("<tr><th>chunk_id</th><th>score</th><th>doc_id</th><th>doc_title</th><th>chunk预览</th></tr>")
+                                    for c in chunks[:MAX_RETRIEVAL_DISPLAY_PER_TYPE]:
+                                        html_parts.append(
+                                            "<tr>"
+                                            f"<td>{esc(c.get('chunk_id', ''))}</td>"
+                                            f"<td>{esc(c.get('score', ''))}</td>"
+                                            f"<td>{esc(c.get('doc_id', ''))}</td>"
+                                            f"<td>{esc(c.get('doc_title', ''))}</td>"
+                                            f"<td>{esc(c.get('content_preview', ''))}</td>"
+                                            "</tr>"
+                                        )
+                                    html_parts.append("</table>")
+                                    html_parts.append("</details>")
+
+                            # 合并后的结果（排序+去重）
+                            merged = retrieval.get("merged_results") or []
+                            if merged:
+                                html_parts.append("<details>")
+                                html_parts.append(
+                                    f"<summary>合并后结果（去重，按分数排序，显示前{MAX_MERGED_DISPLAY}条）</summary>"
+                                )
+                                html_parts.append("<table>")
+                                html_parts.append("<tr><th>rank</th><th>chunk_id</th><th>score</th><th>doc_id</th><th>doc_title</th><th>chunk预览</th></tr>")
+                                for c in merged[:MAX_MERGED_DISPLAY]:
+                                    html_parts.append(
+                                        "<tr>"
+                                        f"<td>{esc(c.get('rank', ''))}</td>"
+                                        f"<td>{esc(c.get('chunk_id', ''))}</td>"
+                                        f"<td>{esc(c.get('score', ''))}</td>"
+                                        f"<td>{esc(c.get('doc_id', ''))}</td>"
+                                        f"<td>{esc(c.get('doc_title', ''))}</td>"
+                                        f"<td>{esc(c.get('content_preview', ''))}</td>"
+                                        "</tr>"
+                                    )
+                                html_parts.append("</table>")
+                                html_parts.append("</details>")
+
+                        # summary 融合结果
+                        summary_full = it.get("summary_full") or ""
+                        if summary_full:
+                            html_parts.append("<h4>summary 融合结果</h4>")
+                            preview_text = summary_full[:MAX_SUMMARY_PREVIEW_CHARS]
+                            if len(summary_full) > MAX_SUMMARY_PREVIEW_CHARS:
+                                preview_text += " ...（已截断，仅显示前部分内容）"
+                            html_parts.append(f"<p>预览：{esc(preview_text)}</p>")
+                            html_parts.append("<details>")
+                            html_parts.append("<summary>展开查看完整 summary</summary>")
+                            html_parts.append("<pre style='white-space:pre-wrap;font-size:12px;'>")
+                            html_parts.append(esc(summary_full))
+                            html_parts.append("</pre>")
+                            html_parts.append("</details>")
+
+                        html_parts.append("</details>")  # end of one iteration
+
+                html_parts.append("</details>")  # end of RAG流程追踪
 
             # 可选：原始JSON
             html_parts.append("<details>")

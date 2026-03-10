@@ -46,6 +46,7 @@ except ImportError as e:
     # 避免在默认 GBK 控制台下因 emoji 导致编码错误
     print(f"[ERROR] 导入RAG_flow失败: {e}")
     sys.exit(1)
+
 # 配置日志（写入 test 目录）
 logging.basicConfig(
     level=logging.INFO,

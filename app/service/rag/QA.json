@@ -124,15 +124,15 @@
     "sample_id": "008",
     "query": "在VOT2020和VOT2022基准测试上，DAM4SAM的EAO指标相比SAM2.1分别提升了多少？",
     "query_type": "多跳推理型",
-    "level": "中等",
+    "level": "困难",
     "domain": "CS",
     "relevant_documents": [
       {
         "doc_id": "",
         "doc_title": "A Distractor-Aware Memory for Visual Object Tracking with SAM2 (一种用于视觉目标跟踪的基于SAM2的干扰物感知记忆模型)",
         "relevant_chunks": [
-          "表3中，SAM2.1的EAO为0.681，DAM4SAM为0.729，提升0.048。",
-          "表4中，SAM2.1的EAO为0.692，DAM4SAM为0.753，提升0.061。"
+          "表3中，SAM2.1的EAO为0.681，DAM4SAM为0.729，提升0.048，约7%。",
+          "表4中，SAM2.1的EAO为0.692，DAM4SAM为0.753，提升0.061，约9%。"
         ]
       }
     ],
@@ -142,7 +142,7 @@
     "sample_id": "009",
     "query": "在CLIP-AST中，Transformer微调阶段的作用是什么？该阶段需要训练多少个epoch？",
     "query_type": "多跳推理型",
-    "level": "中等",
+    "level": "困难",
     "domain": "CS",
     "relevant_documents": [
       {

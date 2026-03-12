@@ -78,7 +78,7 @@ def process_text_stream_api(req: QaRequest):
         return deepSeekClient.chat_completion(messages)
     else:
         rag = RAGFlow()
-        return rag.run(text)
+        return rag.run(text,doc_id=doc_id,kb_id=kb_id,security_level=security_level)
 
 
 

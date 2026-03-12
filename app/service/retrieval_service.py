@@ -113,6 +113,140 @@ def _resolve_embedding_model_path() -> tuple[str, bool]:
     return model_name, False
 
 
+def _resolve_model_path_or_id(model_name: str, default_model: str) -> tuple[str, bool]:
+    """
+    Resolve a model reference.
+    - Local-like paths are converted to absolute paths with local_only=True.
+    - Other values are treated as hub model ids with local_only=False.
+    """
+    name = (model_name or "").strip() or default_model
+    is_local_like = (
+        name.startswith("workspace/")
+        or name.startswith("workspace\\")
+        or name.startswith("./")
+        or name.startswith(".\\")
+        or os.path.isabs(name)
+        or (len(name) >= 2 and name[1] == ":")
+        or "\\" in name
+    )
+    if not is_local_like:
+        return name, False
+
+    if name.startswith("workspace/") or name.startswith("workspace\\"):
+        root = Path(__file__).resolve().parents[2]
+        resolved = (root / name.replace("\\", "/")).resolve()
+    else:
+        resolved = Path(name).resolve()
+    return str(resolved), True
+
+
+def _resolve_rerank_model_name() -> str:
+    """Resolve reranker model name and normalize local path to absolute."""
+    model_name = os.getenv("RERANK_MODEL_NAME", "workspace/jina-reranker-v3")
+    resolved, _ = _resolve_model_path_or_id(model_name, "workspace/jina-reranker-v3")
+    return resolved
+
+
+def _get_milvus_connection_params() -> dict[str, Any] | None:
+    """Build Milvus connection params from environment variables."""
+    host = (os.getenv("MILVUS_HOST", "") or "").strip()
+    port_raw = (os.getenv("MILVUS_PORT", "") or "").strip()
+    user = (os.getenv("MILVUS_USER", "") or "").strip()
+    password = (os.getenv("MILVUS_PASSWORD", "") or "").strip()
+    db_name = (os.getenv("MILVUS_DB_NAME", "") or "").strip()
+
+    params: dict[str, Any] = {}
+    if host:
+        params["host"] = host
+    if port_raw:
+        try:
+            params["port"] = int(port_raw)
+        except ValueError:
+            pass
+    if user:
+        params["user"] = user
+    if password:
+        params["password"] = password
+    if db_name:
+        params["db_name"] = db_name
+    return params or None
+
+
+def _ensure_milvus_default_connection(params: dict[str, Any]) -> None:
+    """
+    Force-connect default alias and try to use target db_name.
+    This mitigates dependency versions that ignore db_name in connect().
+    """
+    host = params.get("host")
+    port = params.get("port")
+    if not host or not port:
+        return
+
+    try:
+        from ability.storage.milvus_client import milvus_client
+        from pymilvus import connections
+    except Exception:
+        return
+
+    user = params.get("user")
+    password = params.get("password")
+    db_name = params.get("db_name")
+
+    try:
+        milvus_client.update_connection_config(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            db_name=db_name,
+        )
+    except Exception:
+        pass
+
+    try:
+        connections.connect(
+            alias="default",
+            host=host,
+            port=str(port),
+            user=user or None,
+            password=password or None,
+            db_name=db_name or None,
+        )
+    except TypeError:
+        try:
+            connections.connect(
+                alias="default",
+                host=host,
+                port=str(port),
+                user=user or None,
+                password=password or None,
+            )
+            if db_name:
+                from pymilvus import db
+
+                db.using_database(db_name, using="default")
+        except Exception:
+            return
+    except Exception:
+        return
+
+    try:
+        milvus_client.connected = True
+        if hasattr(milvus_client, "_use_emulator"):
+            milvus_client._use_emulator = False
+    except Exception:
+        pass
+
+
+def _apply_runtime_retriever_overrides(req_kwargs: dict[str, Any]) -> None:
+    """Inject reranker path and Milvus runtime connection into request kwargs."""
+    req_kwargs.setdefault("rerank_model_name", _resolve_rerank_model_name())
+    milvus_connection = _get_milvus_connection_params()
+    if milvus_connection:
+        req_kwargs.setdefault("milvus_connection", milvus_connection)
+        _ensure_milvus_default_connection(milvus_connection)
+
+
 def _get_embedding_device() -> str:
     """获取 Embedding 模型运行设备：有 GPU 时用 cuda，否则用 cpu。可通过环境变量 EMBEDDING_DEVICE 覆盖。"""
     import torch
@@ -289,6 +423,7 @@ def semantic_search(
     if metadata_filter is not None:
         req_kwargs["milvus_expr"] = metadata_filter
 
+    _apply_runtime_retriever_overrides(req_kwargs)
     req = SemanticSearchRequest(**req_kwargs)
     return RetrieverService.semantic_search(req)
 
@@ -327,6 +462,7 @@ def keyword_search(
     if extra:
         req_kwargs["extra_params"] = extra
 
+    _apply_runtime_retriever_overrides(req_kwargs)
     req = KeywordSearchRequest(**req_kwargs)
     return RetrieverService.keyword_search(req)
 
@@ -374,6 +510,7 @@ def hybrid_search(
     if extra:
         req_kwargs["extra_params"] = extra
 
+    _apply_runtime_retriever_overrides(req_kwargs)
     req = HybridSearchRequest(**req_kwargs)
     return RetrieverService.hybrid_search(req)
 
@@ -413,6 +550,7 @@ def fulltext_search(
     if extra:
         req_kwargs["extra_params"] = extra
 
+    _apply_runtime_retriever_overrides(req_kwargs)
     req = FulltextSearchRequest(**req_kwargs)
     return RetrieverService.fulltext_search(req)
 
@@ -452,6 +590,7 @@ def text_match_search(
     if extra:
         req_kwargs["extra_params"] = extra
 
+    _apply_runtime_retriever_overrides(req_kwargs)
     req = TextMatchSearchRequest(**req_kwargs)
     return RetrieverService.text_match_search(req)
 
@@ -491,5 +630,6 @@ def phrase_match_search(
     if extra:
         req_kwargs["extra_params"] = extra
 
+    _apply_runtime_retriever_overrides(req_kwargs)
     req = PhraseMatchSearchRequest(**req_kwargs)
     return RetrieverService.phrase_match_search(req)

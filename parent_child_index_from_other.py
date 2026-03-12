@@ -23,24 +23,24 @@ import requests
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="调用 /api/v1/index/build 接口，从本地 JSON 目录构建知识库",
+        description="调用 /api/v1/index/build_documents 接口，从本地目录构建知识库",
     )
     parser.add_argument(
         "--input-dir",
         type=str,
-        default=r"C:\Users\11440\Desktop\第三批1967篇\json_chinese_901-2867",
-        help="JSON 文件所在目录",
+        default=r"D:\rag\期刊论文\石油钻探技术\2025",
+        help="文件所在目录",
     )
     parser.add_argument(
         "--kb-id",
         type=int,
-        default=1,
+        default=3,
         help="知识库 ID（对应 API 的 kb_id 参数）",
     )
     parser.add_argument(
         "--api-url",
         type=str,
-        default="http://192.168.1.5:5010/api/v1/index/build_json",
+        default="http://192.168.1.5:5010/api/v1/index/build_documents",
         help="索引构建接口地址",
     )
 
@@ -51,7 +51,7 @@ def main() -> None:
         print(f"输入目录不存在: {input_dir}")
         return
 
-    json_files = sorted(input_dir.glob("*.json"))
+    json_files = sorted(input_dir.glob("*.pdf"))
     if not json_files:
         print(f"目录下无 JSON 文件: {input_dir}")
         return

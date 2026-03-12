@@ -12,6 +12,7 @@ WORKDIR /app
 COPY . .
 
 RUN pip install peft
+RUN pip install colorama==0.4.6
 
 # 1. 安装 git（如果基础镜像里没有的话）
 RUN apt-get update && apt-get install -y git openssh-client && rm -rf /var/lib/apt/lists/*

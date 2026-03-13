@@ -312,6 +312,57 @@ class RAGFlow:
 
         return {"doc_id": doc_id, "doc_title": doc_title}
 
+    def _analyze_chunk_structure(self, content: str) -> Dict[str, float]:
+        """
+        对 chunk 文本做简单结构分析，识别表格 / 引用 / 公式等特征。
+        返回 0~1 之间的启发式得分，用于轻微调整排序与证据权重。
+        """
+        text = (content or "").strip()
+        if not text:
+            return {"table_score": 0.0, "citation_score": 0.0, "formula_score": 0.0}
+
+        # 表格特征：多行、包含 | 或 , 或制表符，且数字密集
+        lines = text.splitlines()
+        num_lines = len(lines)
+        table_like_lines = 0
+        digit_lines = 0
+        for line in lines:
+            line_strip = line.strip()
+            if not line_strip:
+                continue
+            if "|" in line_strip or "\t" in line_strip or ("," in line_strip and any(ch.isdigit() for ch in line_strip)):
+                table_like_lines += 1
+            if len(re.findall(r"\d", line_strip)) >= 3:
+                digit_lines += 1
+
+        table_score = 0.0
+        if num_lines >= 2:
+            ratio_table = table_like_lines / num_lines
+            ratio_digit = digit_lines / num_lines
+            table_score = min(1.0, 0.6 * ratio_table + 0.4 * ratio_digit)
+
+        # 引用特征：出现 [1]、[12]、[3,4] 等模式
+        citation_matches = re.findall(r"\[[0-9,\s\-]{1,6}\]", text)
+        citation_score = 0.0
+        if citation_matches:
+            citation_score = min(1.0, len(citation_matches) / 4.0)
+
+        # 公式特征：等号、^、_、LaTeX 命令等
+        formula_score = 0.0
+        if any(sym in text for sym in ["=", "+", "-", "*", "/", "^", "_"]):
+            formula_score += 0.3
+        if any(kw in text for kw in ["\\frac", "\\sum", "\\int", "\\log", "\\exp"]):
+            formula_score += 0.4
+        if re.search(r"\b\d+(\.\d+)?\s*(×|x)\s*\d+(\.\d+)?\b", text):
+            formula_score += 0.3
+        formula_score = min(1.0, formula_score)
+
+        return {
+            "table_score": round(table_score, 3),
+            "citation_score": round(citation_score, 3),
+            "formula_score": round(formula_score, 3),
+        }
+
     def retrieve_documents(self, query: str, collect_trace: bool = False, doc_id: Union[int, List[int], None] = None,
         kb_id: Union[int, List[int], None] = None,
         security_level: Union[int, List[int], None] = None,) -> Any:
@@ -449,12 +500,37 @@ class RAGFlow:
                     logger.error(f"关键词检索失败: {str(e)}")
                     _print_warning(f"关键词检索失败: {str(e)}")
 
-            # 4. 显示合并后的结果
-            logger.info(f"合并后去重结果数: {len(all_results)}")
-            _print_info(f"\n合并后去重结果数: {len(all_results)}")
+            # 4. 对合并结果做轻量结构感知排序（不修改原始 score，仅调整 rank）
+            scored_results: List[Dict[str, Any]] = []
+            for result in all_results:
+                base_score = getattr(result, "score", 0.0) or 0.0
+                content = getattr(result, "content", "") if hasattr(result, "content") else ""
+                struct_scores = self._analyze_chunk_structure(content)
+                # 轻微加权：表格 > 引用 > 公式
+                boost = (
+                    0.25 * struct_scores.get("table_score", 0.0)
+                    + 0.2 * struct_scores.get("citation_score", 0.0)
+                    + 0.15 * struct_scores.get("formula_score", 0.0)
+                )
+                adjusted_score = float(base_score) + float(boost)
+                scored_results.append(
+                    {
+                        "result": result,
+                        "base_score": base_score,
+                        "adjusted_score": adjusted_score,
+                        "struct_scores": struct_scores,
+                    }
+                )
+
+            scored_results.sort(key=lambda x: x["adjusted_score"], reverse=True)
+
+            logger.info(f"合并后去重结果数: {len(scored_results)}")
+            _print_info(f"\n合并后去重结果数: {len(scored_results)}")
 
             # 记录合并后的结果（保留预览和完整内容，便于后续评估）
-            for idx, result in enumerate(all_results):
+            for idx, item in enumerate(scored_results):
+                result = item["result"]
+                struct_scores = item["struct_scores"]
                 info = self._extract_doc_info_from_result(result)
                 retrieval_record["merged_results"].append(
                     {
@@ -465,6 +541,7 @@ class RAGFlow:
                         "content_full": getattr(result, "content", "") if hasattr(result, "content") else "",
                         "doc_id": info["doc_id"],
                         "doc_title": info["doc_title"],
+                        "structure_scores": struct_scores,
                     }
                 )
 
@@ -647,21 +724,53 @@ class RAGFlow:
             sorted_results = results
 
         # 2. 过滤（限制处理的chunk数量以提高性能，取前10个最相关的chunk）
-        filtered_results = sorted_results[:10]  # 减少处理的数量，提高性能
-        logger.info(f"过滤后结果数: {len(filtered_results)}")
-        _print_info(f"过滤后结果数: {len(filtered_results)}")
+        #    在原始 score 基础上加入结构感知加权，让表格/引用chunk略微优先。
+        scored_for_summary: List[Dict[str, Any]] = []
+        for result in sorted_results:
+            try:
+                base_score = getattr(result, "score", 0.0) or 0.0
+                content = getattr(result, "content", "") if hasattr(result, "content") else ""
+                struct_scores = self._analyze_chunk_structure(content)
+                boost = (
+                    0.3 * struct_scores.get("table_score", 0.0)
+                    + 0.2 * struct_scores.get("citation_score", 0.0)
+                    + 0.1 * struct_scores.get("formula_score", 0.0)
+                )
+                adjusted_score = float(base_score) + float(boost)
+                meta = self._extract_doc_info_from_result(result)
+                scored_for_summary.append(
+                    {
+                        "result": result,
+                        "base_score": base_score,
+                        "adjusted_score": adjusted_score,
+                        "struct_scores": struct_scores,
+                        "doc_id": meta.get("doc_id"),
+                        "doc_title": meta.get("doc_title"),
+                        "chunk_id": getattr(result, "chunk_id", None),
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"为summary构造结构感知得分时出错: {str(e)}")
+
+        scored_for_summary.sort(key=lambda x: x["adjusted_score"], reverse=True)
+        filtered_items = scored_for_summary[:10]  # 减少处理的数量，提高性能
+        logger.info(f"过滤后结果数: {len(filtered_items)}")
+        _print_info(f"过滤后结果数: {len(filtered_items)}")
 
         # 3. 对每个chunk进行证据抽取，避免上下文过长（并发调用以提升性能）
         chunk_evidences: List[str] = []
 
         # 预先收集需要处理的 chunk 信息
         indexed_chunks: List[Dict[str, Any]] = []
-        for i, result in enumerate(filtered_results):
+        for i, item in enumerate(filtered_items):
             try:
-                score = getattr(result, "score", 0.0)
+                result = item["result"]
+                score = float(item.get("base_score", getattr(result, "score", 0.0) or 0.0))
                 content = getattr(result, "content", "")
-                chunk_id = getattr(result, "chunk_id", None)
-                info = self._extract_doc_info_from_result(result)
+                chunk_id = item.get("chunk_id", getattr(result, "chunk_id", None))
+                doc_id = item.get("doc_id")
+                doc_title = item.get("doc_title")
+                struct_scores = item.get("struct_scores", {})
                 if content:
                     indexed_chunks.append(
                         {
@@ -669,8 +778,9 @@ class RAGFlow:
                             "score": score,
                             "content": content,
                             "chunk_id": chunk_id,
-                            "doc_id": info.get("doc_id"),
-                            "doc_title": info.get("doc_title"),
+                            "doc_id": doc_id,
+                            "doc_title": doc_title,
+                            "structure_scores": struct_scores,
                         }
                     )
             except Exception as e:
@@ -694,6 +804,7 @@ class RAGFlow:
         index_to_evidence: Dict[int, Dict[str, Any]] = {}
         index_to_score: Dict[int, float] = {}
         index_to_meta: Dict[int, Dict[str, Any]] = {}
+        index_to_struct_scores: Dict[int, Dict[str, float]] = {}
 
         # 使用线程池并发调用 extract_evidence_single_chunk
         try:
@@ -710,6 +821,7 @@ class RAGFlow:
                         "doc_id": item.get("doc_id"),
                         "doc_title": item.get("doc_title"),
                     }
+                    index_to_struct_scores[idx] = item.get("structure_scores", {})
 
                     logger.info(f"提交第{idx + 1}个chunk进行证据抽取，分数: {score:.3f}")
                     _print_info(f"提交第{idx + 1}个chunk进行证据抽取，分数: {score:.3f}...")
@@ -766,20 +878,61 @@ class RAGFlow:
                     "doc_id": item.get("doc_id"),
                     "doc_title": item.get("doc_title"),
                 }
+                index_to_struct_scores[idx] = item.get("structure_scores", {})
 
         # 按原始顺序构造 chunk_evidences，保持算法行为一致
         evidence_items_for_judge: List[Dict[str, Any]] = []
-        for i in range(len(filtered_results)):
+        for i in range(len(filtered_items)):
             if i in index_to_evidence and i in index_to_score:
-                score = index_to_score[i]
+                score = index_to_score.get(i, 0.0)
                 ev_obj = index_to_evidence[i]
                 meta = index_to_meta.get(i, {})
                 doc_title = meta.get("doc_title") or ""
                 chunk_id = meta.get("chunk_id")
+                doc_id = meta.get("doc_id")
+                struct_scores = index_to_struct_scores.get(i, {}) or {}
                 key_facts = ev_obj.get("key_facts") if isinstance(ev_obj.get("key_facts"), list) else []
                 ev_sents = ev_obj.get("evidence_sentences") if isinstance(ev_obj.get("evidence_sentences"), list) else []
                 key_facts_str = ", ".join([x for x in key_facts if isinstance(x, str)])[:200]
-                ev_text = "\n".join([s for s in ev_sents if isinstance(s, str)])
+                ev_text_lines: List[str] = [s for s in ev_sents if isinstance(s, str)]
+
+                # 邻接 chunk 证据扩展：同一 doc_id 内、chunk_id 相邻的证据一并纳入
+                if doc_id is not None and chunk_id is not None:
+                    try:
+                        neighbor_texts: List[str] = []
+                        for j, ev_j in index_to_evidence.items():
+                            if j == i:
+                                continue
+                            meta_j = index_to_meta.get(j, {})
+                            doc_id_j = meta_j.get("doc_id")
+                            chunk_id_j = meta_j.get("chunk_id")
+                            if doc_id_j != doc_id or chunk_id_j is None:
+                                continue
+                            if abs(int(chunk_id_j) - int(chunk_id)) <= 2:
+                                ev_j_sents = ev_j.get("evidence_sentences")
+                                if isinstance(ev_j_sents, list):
+                                    joined = "\n".join(
+                                        [s for s in ev_j_sents if isinstance(s, str)]
+                                    )
+                                    if joined.strip():
+                                        neighbor_texts.append(
+                                            f"[邻接chunk {chunk_id_j} 证据]\n{joined}"
+                                        )
+                        if neighbor_texts:
+                            ev_text_lines.append("\n".join(neighbor_texts))
+                    except Exception as e:
+                        logger.warning(f"邻接chunk证据扩展失败: {str(e)}")
+
+                ev_text = "\n".join(ev_text_lines)
+
+                tags: List[str] = []
+                if struct_scores.get("table_score", 0.0) > 0.0:
+                    tags.append("table")
+                if struct_scores.get("citation_score", 0.0) > 0.0:
+                    tags.append("citation")
+                if struct_scores.get("formula_score", 0.0) > 0.0:
+                    tags.append("formula")
+                tags_str = ", ".join(tags)
 
                 evidence_items_for_judge.append(
                     {
@@ -789,6 +942,8 @@ class RAGFlow:
                         "score": score,
                         "key_facts": key_facts,
                         "evidence_sentences": ev_sents,
+                        "structure_scores": struct_scores,
+                        "doc_id": doc_id,
                     }
                 )
 
@@ -796,6 +951,7 @@ class RAGFlow:
                     f"[结果{i + 1} 相关性分数: {score:.3f}]\n"
                     f"doc_title: {doc_title}\n"
                     f"chunk_id: {chunk_id}\n"
+                    f"tags: {tags_str}\n"
                     f"key_facts: {key_facts_str}\n"
                     f"evidence:\n{ev_text}\n"
                 )

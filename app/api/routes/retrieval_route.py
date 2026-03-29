@@ -35,7 +35,7 @@ async def _result_to_dict(
         parent_chunk = await retrieval_service.get_parent_content_by_chunk_id(
             chunk_id=chunk_id
         )
-
+    filename = await retrieval_service.get_filename_by_doc_id(doc_id)
     return {
         "chunk_id": getattr(r, "chunk_id", None),
         "doc_id": doc_id,
@@ -44,6 +44,7 @@ async def _result_to_dict(
         "metadata": metadata,
         "parent_chunk": parent_chunk,
         "original_text": original_text,
+        "filename": filename,
     }
 
 

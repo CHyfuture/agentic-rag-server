@@ -310,6 +310,19 @@ async def get_original_text_by_doc_id(doc_id: int) -> str:
         return (data.get("markdown_content") if isinstance(data, dict) else None) or ""
     return getattr(doc, "markdown_content", "") or ""
 
+async def get_filename_by_doc_id(doc_id: int) -> str:
+    """从文档表获取原文 file_name。"""
+    try:
+        client = _get_document_client()
+        doc = await client.get_document(doc_id=doc_id)
+    except Exception:
+        return ""
+
+    if isinstance(doc, dict):
+        data = doc.get("data")
+        return (data.get("file_name") if isinstance(data, dict) else None) or ""
+    return getattr(doc, "file_name", "") or ""
+
 
 async def get_parent_content_by_chunk_id(chunk_id: int) -> str:
     """根据 chunk_id 直接从文档切片表获取 parent_content。"""
